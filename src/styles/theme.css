@@ -1,0 +1,158 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 14px;
+  --background: #0b0f14;
+  --foreground: #e7edf6;
+  --card: #101622;
+  --card-foreground: #e7edf6;
+  --popover: #101622;
+  --popover-foreground: #e7edf6;
+  --primary: #93c5fd;
+  --primary-foreground: #0b0f14;
+  --secondary: #111827;
+  --secondary-foreground: #e7edf6;
+  --muted: #111827;
+  --muted-foreground: #9aa4b2;
+  --accent: #111827;
+  --accent-foreground: #e7edf6;
+  --destructive: #ff4d4f;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.10);
+  --input: transparent;
+  --input-background: #111827;
+  --switch-background: #223044;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: rgba(147, 197, 253, 0.35);
+  --radius: 0.5rem;
+
+  --color-gray-950: #010409;
+  --color-gray-900: #0d1117;
+  --color-gray-850: #101419;
+  --color-gray-800: #161b22;
+  --color-gray-750: #1c2128;
+  --color-gray-700: #21262d;
+  --color-gray-600: #30363d;
+  --color-gray-500: #484f58;
+  --color-gray-400: #8b949e;
+  --color-gray-300: #c9d1d9;
+  --color-gray-200: #f0f6fc;
+
+  --color-blue-500: #2f81f7;
+  --color-blue-600: #58a6ff;
+  --color-blue-700: #1f6feb;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: var(--ring);
+  }
+
+  /* 窗口拖动区域 */
+  [data-tauri-drag-region] {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  [data-tauri-drag-region] button,
+  [data-tauri-drag-region] input,
+  [data-tauri-drag-region] select {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  html {
+    font-size: var(--font-size);
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    margin: 0;
+    height: 100%;
+    width: 100%;
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+
+  #root {
+    height: 100%;
+    width: 100%;
+  }
+
+  /* ========== 全局滚动条样式 - 与深色主题一致 ========== */
+
+  /* WebKit 浏览器 (Chrome, Safari, Edge) */
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-gray-600);
+    border-radius: 3px;
+    transition: background 0.2s ease;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-gray-500);
+  }
+
+  *::-webkit-scrollbar-thumb:active {
+    background: var(--color-gray-400);
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Firefox 滚动条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-gray-600) transparent;
+  }
+
+  /* 隐藏不必要的滚动条 */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
