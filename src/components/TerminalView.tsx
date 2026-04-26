@@ -215,7 +215,7 @@ export function TerminalView(props: {
         for (const line of split) {
           // Record command to history
           if (line.trim()) {
-            try { addCommand(String(ptyId), line.trim()); } catch {}
+            try { addCommand(tab.sessionId, line.trim()); } catch {}
           }
 
           const target = parseCdTarget(line);
@@ -243,6 +243,11 @@ export function TerminalView(props: {
         }
       }
       api.ptySend(ptyId, data).catch(() => undefined);
+      
+      // 通知 App 刷新历史记录
+      window.dispatchEvent(new CustomEvent("zssh:command-sent", { 
+        detail: { sessionId: tab.sessionId } 
+      }));
     });
 
     const ro = new ResizeObserver(() => {

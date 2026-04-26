@@ -11,6 +11,7 @@ import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 
 import { SftpPanel } from "./components/SftpPanel";
 import { MonitorPanel } from "./components/MonitorPanel";
+import { NotepadPanel } from "./components/NotepadPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import {
   GroupNameModal,
@@ -18,19 +19,21 @@ import {
   CommandPaletteBody,
 } from "./components/AppComponents";
 import { useAppStore } from "./store/appStore";
+import { useNotepadStore } from "./store/notepadStore";
 import type { AuthPromptEvent, HostKeyPromptEvent, SessionPublic, UUID } from "./types";
 import { api } from "./api";
-import { Folder, PlugZap, Activity } from "lucide-react";
+import { Folder, PlugZap, Activity, Notebook, Terminal } from "lucide-react";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { dbg } from "./lib/debug";
 import { DEFAULT_COMMON_COMMANDS, getDefaultCommonCommands } from "./lib/defaultCommonCommands";
+import { getCustomCommands, getCommandList, SYSTEM_COMMANDS, searchHistory, getSessionHistory } from "./lib/commandHistory";
 import { t, tf } from "./lib/i18n";
 import { DEFAULT_SHORTCUTS } from "./lib/defaultShortcuts";
 import { applyTheme, DEFAULT_THEME } from "./lib/themes";
 import { checkPaste, type PasteCheckResult } from "./lib/pasteProtection";
 import { logError, generateReportText, getErrorCount } from "./lib/errorLogger";
-import type { Terminal } from "xterm";
+import type { Terminal as XtermTerminal } from "xterm";
 import type { SearchAddon } from "@xterm/addon-search";
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null; errorId: string | null }> {
@@ -127,17 +130,28 @@ function App() {
   const [lastTermSize, setLastTermSize] = useState<{ cols: number; rows: number }>({ cols: 120, rows: 30 });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const activeTermRef = useRef<Terminal | null>(null);
+  const activeTermRef = useRef<XtermTerminal | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const [searchVisible, setSearchVisible] = useState(false);
   const [commandHistoryOpen, setCommandHistoryOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [notepadOpen, setNotepadOpen] = useState(false);
+  const notepadStore = useNotepadStore();
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Load notepad data when opening
+  useEffect(() => {
+    if (notepadOpen) notepadStore.loadFromStorage();
+  }, [notepadOpen]);
   const [pasteCheckResult, setPasteCheckResult] = useState<PasteCheckResult | null>(null);
   const [groupNameModal, setGroupNameModal] = useState<{ mode: "new" | "rename"; groupId: UUID | null; initial: string } | null>(null);
   const [groupNameValue, setGroupNameValue] = useState("");
 
   const lang = store.settings?.language ?? "zh-CN";
   const layoutMode = store.settings?.layoutMode ?? "compact";
+
+  // 获取自定义命令
+  const customCommands = useMemo(() => getCustomCommands(), [refreshKey]);
 
   const isTauri = useMemo(() => {
     const w = window as any;
@@ -146,6 +160,15 @@ function App() {
 
   useEffect(() => {
     store.refreshAll().catch(() => undefined);
+  }, []);
+
+  // 监听命令发送事件以刷新历史记录
+  useEffect(() => {
+    const handler = () => {
+      setRefreshKey((k) => k + 1);
+    };
+    window.addEventListener("zssh:command-sent", handler);
+    return () => window.removeEventListener("zssh:command-sent", handler);
   }, []);
 
   useEffect(() => {
@@ -193,6 +216,13 @@ function App() {
   }, []);
 
   const activeTab = useMemo(() => store.tabs.find((t) => t.id === store.activeTabId) ?? null, [store.tabs, store.activeTabId]);
+
+  // 获取当前会话的命令历史（最多20条）
+  const recentHistory = useMemo(() => {
+    if (!activeTab?.sessionId) return [];
+    return getSessionHistory(activeTab.sessionId, 20);
+  }, [refreshKey, activeTab?.sessionId]);
+
   const activeSession = useMemo(
     () => (activeTab ? store.sessions.find((s) => s.id === activeTab.sessionId) ?? null : null),
     [activeTab?.sessionId, store.sessions],
@@ -228,7 +258,10 @@ function App() {
   // 快捷键处理函数 - 使用 useCallback 确保稳定的函数引用
   const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
 
-  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true);
+    setRefreshKey(n => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -421,6 +454,7 @@ function App() {
             store.toggleFavorite(id).catch(() => undefined);
           }}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenNotepad={() => setNotepadOpen(true)}
           onMoveSessionToGroup={(sessionId, groupId) =>
             store.moveSessionToGroup(sessionId, groupId).catch(() => undefined)
           }
@@ -496,6 +530,7 @@ function App() {
                       {activeTab?.ptyId ? t(lang, "disconnect") : t(lang, "connect")}
                     </button>
 
+                    {/* 系统命令下拉框 */}
                     <select
                       value=""
                       disabled={!activeTab?.ptyId}
@@ -507,18 +542,77 @@ function App() {
                         if (!ptyId) return;
                         dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
                         api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
+                        setRefreshKey(n => n + 1);
                       }}
                       className={[
-                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)]",
+                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
                         !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
                       ].join(" ")}
                     >
                       <option value="" disabled>
-                        {t(lang, "quickCommands")}
+                        系统命令
                       </option>
-                      {(store.settings?.commonCommands?.length ? store.settings.commonCommands : getDefaultCommonCommands(lang)).map((c) => (
-                        <option key={c.id} value={c.command}>
-                          {c.name}
+                      {SYSTEM_COMMANDS.map((c) => (
+                        <option key={c.id} value={c.command} title={c.command}>
+                          {t(lang, c.displayNameKey)}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* 自定义命令下拉框 */}
+                    <select
+                      value=""
+                      disabled={!activeTab?.ptyId}
+                      onChange={(e) => {
+                        const v = e.currentTarget.value;
+                        e.currentTarget.value = "";
+                        if (!v) return;
+                        const ptyId = activeTab?.ptyId;
+                        if (!ptyId) return;
+                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
+                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
+                        setRefreshKey(n => n + 1);
+                      }}
+                      className={[
+                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
+                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
+                      ].join(" ")}
+                    >
+                      <option value="" disabled>
+                        自定义
+                      </option>
+                      {customCommands.map((c) => (
+                        <option key={c.id} value={c.command} title={c.command}>
+                          {c.displayName || c.command}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* 历史记录下拉框 */}
+                    <select
+                      value=""
+                      disabled={!activeTab?.ptyId}
+                      onChange={(e) => {
+                        const v = e.currentTarget.value;
+                        e.currentTarget.value = "";
+                        if (!v) return;
+                        const ptyId = activeTab?.ptyId;
+                        if (!ptyId) return;
+                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
+                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
+                        setRefreshKey(n => n + 1);
+                      }}
+                      className={[
+                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
+                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
+                      ].join(" ")}
+                    >
+                      <option value="" disabled>
+                        历史记录
+                      </option>
+                      {recentHistory.map((c) => (
+                        <option key={c.id} value={c.command} title={c.command}>
+                          {c.command.slice(0, 30)}{c.command.length > 30 ? "..." : ""}
                         </option>
                       ))}
                     </select>
@@ -681,6 +775,7 @@ function App() {
                     {t(lang, "monitor")}
                   </button>
 
+                  {/* 系统命令下拉框 */}
                   <select
                     value=""
                     disabled={!activeTab?.ptyId}
@@ -692,18 +787,77 @@ function App() {
                       if (!ptyId) return;
                       dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
                       api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
+                      setRefreshKey(n => n + 1);
                     }}
                     className={[
-                      "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)]",
+                      "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
                       !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
                     ].join(" ")}
                   >
                     <option value="" disabled>
-                      {t(lang, "quickCommands")}
+                      系统命令
                     </option>
-                    {(store.settings?.commonCommands?.length ? store.settings.commonCommands : getDefaultCommonCommands(lang)).map((c) => (
-                      <option key={c.id} value={c.command}>
-                        {c.name}
+                    {SYSTEM_COMMANDS.map((c) => (
+                      <option key={c.id} value={c.command} title={c.command}>
+                        {t(lang, c.displayNameKey)}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* 自定义命令下拉框 */}
+                  <select
+                    value=""
+                    disabled={!activeTab?.ptyId}
+                      onChange={(e) => {
+                        const v = e.currentTarget.value;
+                        e.currentTarget.value = "";
+                        if (!v) return;
+                        const ptyId = activeTab?.ptyId;
+                        if (!ptyId) return;
+                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
+                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
+                        setRefreshKey(n => n + 1);
+                      }}
+                      className={[
+                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
+                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
+                      ].join(" ")}
+                    >
+                      <option value="" disabled>
+                        自定义
+                      </option>
+                    {customCommands.map((c) => (
+                      <option key={c.id} value={c.command} title={c.command}>
+                        {c.displayName || c.command}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* 历史记录下拉框 */}
+                  <select
+                    value=""
+                    disabled={!activeTab?.ptyId}
+                    onChange={(e) => {
+                      const v = e.currentTarget.value;
+                      e.currentTarget.value = "";
+                      if (!v) return;
+                      const ptyId = activeTab?.ptyId;
+                      if (!ptyId) return;
+                      dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
+                      api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
+                      setRefreshKey(n => n + 1);
+                    }}
+                    className={[
+                      "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
+                      !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
+                    ].join(" ")}
+                  >
+                    <option value="" disabled>
+                      历史记录
+                    </option>
+                    {recentHistory.map((c) => (
+                      <option key={c.id} value={c.command} title={c.command}>
+                        {c.command.slice(0, 30)}{c.command.length > 30 ? "..." : ""}
                       </option>
                     ))}
                   </select>
@@ -972,6 +1126,12 @@ function App() {
           lang={lang}
         />
       )}
+
+      <NotepadPanel
+        open={notepadOpen}
+        onClose={() => setNotepadOpen(false)}
+        lang={lang}
+      />
 
     </div>
   );

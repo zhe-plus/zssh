@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import type { Group, SessionPublic, UUID } from "../types";
-import { ChevronDown, ChevronRight, MoreVertical, PanelLeft, PanelLeftClose, Pencil, Plus, Search, Server, Settings, Star, Trash2, GripVertical } from "lucide-react";
+import { ChevronDown, ChevronRight, MoreVertical, Notebook, PanelLeft, PanelLeftClose, Pencil, Plus, Search, Server, Settings, Star, Trash2, GripVertical } from "lucide-react";
 import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, closestCenter, useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -30,6 +30,7 @@ interface SidebarProps {
   onOpen: (id: UUID) => void;
   onToggleFavorite: (id: UUID) => void;
   onOpenSettings: () => void;
+  onOpenNotepad: () => void;
   onMoveSessionToGroup?: (sessionId: UUID, targetGroupId: UUID | null) => Promise<void>;
   onReorderSessionsInGroup?: (groupId: UUID | null, sessionIds: UUID[]) => Promise<void>;
 }
@@ -501,7 +502,8 @@ export function Sidebar(props: SidebarProps) {
         <IconButton icon={<PanelLeft className={sz.md} />} title={t(lang, "shortcutToggleSidebar")} onClick={props.onToggleCollapse} compact={isCompact} />
         <IconButton icon={<Plus className={sz.md} />} title={t(lang, "addConnection")} onClick={props.onNew} compact={isCompact} />
         <div className="flex-1" />
-        <IconButton icon={<Settings className={sz.md} />} title={t(lang, "settings")} onClick={props.onOpenSettings} compact={isCompact} mb />
+        <IconButton icon={<Settings className={sz.md} />} title={t(lang, "settings")} onClick={props.onOpenSettings} compact={isCompact} />
+        <IconButton icon={<Notebook className={sz.md} />} title={t(lang, "notepadOpen")} onClick={props.onOpenNotepad} compact={isCompact} />
       </div>
 
       {/* ===== 展开内容区 ===== */}
@@ -598,7 +600,7 @@ export function Sidebar(props: SidebarProps) {
           </DndContext>
         </main>
 
-        {/* 底部设置按钮 */}
+        {/* 底部设置和日记按钮 */}
         <footer className="border-t border-[var(--color-gray-800)] p-3 shrink-0">
           <button
             onClick={props.onOpenSettings}
@@ -606,6 +608,13 @@ export function Sidebar(props: SidebarProps) {
           >
             <Settings className={sz.md} />
             <span className="text-sm">{t(lang, "settings")}</span>
+          </button>
+          <button
+            onClick={props.onOpenNotepad}
+            className="w-full rounded flex items-center gap-2 text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-[var(--color-gray-300)] transition-colors px-3 py-2 mt-1"
+          >
+            <Notebook className={sz.md} />
+            <span className="text-sm">{t(lang, "notepadOpen")}</span>
           </button>
         </footer>
       </div>

@@ -57,6 +57,16 @@ export const SYSTEM_COMMANDS: SystemCommand[] = [
 ];
 
 // ========== 历史记录相关函数 ==========
+/** 清理命令字符串，移除控制字符和不可见字符 */
+function sanitizeCommand(cmd: string): string {
+  // 移除控制字符（ASCII 0-31，除了制表符\t 和换行符\n用于显示）
+  // 保留可打印字符和中文等Unicode字符
+  return cmd
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // 移除控制字符
+    .replace(/\s+/g, ' ') // 规范化空白字符
+    .trim();
+}
+
 function loadHistory(): CommandEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_HISTORY);
@@ -80,23 +90,24 @@ function saveHistory(entries: CommandEntry[]): void {
 
 /** 添加命令到历史记录 */
 export function addCommand(sessionId: string, cmd: string): void {
-  const s = cmd.trim();
+  const s = sanitizeCommand(cmd);
   if (!s) return;
 
   const entries = loadHistory();
 
-  // 去重：移除同一会话中的相同命令
-  const last = entries[entries.length - 1];
-  if (last && last.sessionId === sessionId && last.command === s) return;
+  // 去重：移除同一会话中的所有相同命令（只保留最新的一条）
+  const filtered = entries.filter(
+    (e) => !(e.sessionId === sessionId && e.command === s)
+  );
 
-  entries.push({
+  filtered.push({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     sessionId,
     command: s,
     timestamp: Date.now(),
   });
 
-  saveHistory(entries);
+  saveHistory(filtered);
 }
 
 /** 搜索历史记录 */

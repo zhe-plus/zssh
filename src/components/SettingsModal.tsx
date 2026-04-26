@@ -1,20 +1,48 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CommonCommand, Settings } from "../types";
 import { Modal } from "./Modal";
-import { Check, FileJson, Globe, Keyboard, Layout, Palette, Terminal } from "lucide-react";
-import { getDefaultCommonCommands } from "../lib/defaultCommonCommands";
+import { Check, FileJson, Globe, Keyboard, Layout, Palette, Terminal, Search } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { useAppStore } from "../store/appStore";
 import { t } from "../lib/i18n";
 import { isCompactLayout } from "../lib/layout";
 import { DEFAULT_SHORTCUTS } from "../lib/defaultShortcuts";
+import {
+  SYSTEM_COMMANDS,
+  getCustomCommands,
+  getDisabledSystemCommands,
+  toggleSystemCommandDisabled,
+  resetSystemCommands,
+  addCustomCommand,
+  updateCustomCommand,
+  deleteCustomCommand,
+  clearCustomCommands,
+  searchHistory,
+  clearHistory,
+  type CommandItem,
+} from "../lib/commandHistory";
 
 export function SettingsModal(props: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => Promise<void> }) {
   const [s, setS] = useState<Settings>(props.settings);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"theme" | "language" | "layout" | "shortcuts" | "commonCommands" | "importExport">("theme");
+  const [tab, setTab] = useState<"theme" | "language" | "layout" | "shortcuts" | "commandManager" | "importExport">("theme");
+
+  // 命令管理相关状态
+  const [cmdTab, setCmdTab] = useState<"system" | "custom" | "history">("system");
+  const [customCmds, setCustomCmds] = useState<CommandItem[]>([]);
+  const [historyList, setHistoryList] = useState<CommandItem[]>([]);
+  const [disabledSys, setDisabledSys] = useState<Set<string>>(new Set());
+  const [cmdSearch, setCmdSearch] = useState("");
+
+  // 加载命令数据
+  useEffect(() => {
+    if (tab !== "commandManager") return;
+    setCustomCmds(getCustomCommands());
+    setHistoryList(searchHistory("", 100));
+    setDisabledSys(getDisabledSystemCommands());
+  }, [tab]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -120,34 +148,72 @@ export function SettingsModal(props: { open: boolean; onClose: () => void; setti
     }
   }
 
-  function updateCommand(id: string, patch: Partial<CommonCommand>) {
-    setS({
-      ...s,
-      commonCommands: (s.commonCommands ?? []).map((c) => (c.id === id ? { ...c, ...patch } : c)),
-    });
+  // 命令管理函数
+  function handleToggleSysCmd(id: string) {
+    const newDisabled = new Set(disabledSys);
+    if (newDisabled.has(id)) {
+      newDisabled.delete(id);
+    } else {
+      newDisabled.add(id);
+    }
+    toggleSystemCommandDisabled(id, !disabledSys.has(id));
+    setDisabledSys(newDisabled);
   }
 
-  function addCommand() {
-    const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-    setS({
-      ...s,
-      commonCommands: [
-        ...(s.commonCommands ?? []),
-        {
-          id,
-          name: t(lang, "commonCommandsNewCommand"),
-          command: "",
-        },
-      ],
-    });
+  function handleResetSysCmds() {
+    resetSystemCommands();
+    setDisabledSys(new Set());
   }
 
-  function removeCommand(id: string) {
-    setS({
-      ...s,
-      commonCommands: (s.commonCommands ?? []).filter((c) => c.id !== id),
-    });
+  function handleAddCustomCmd() {
+    addCustomCommand("", "");
+    setCustomCmds(getCustomCommands());
   }
+
+  function handleUpdateCustomCmd(id: string, command: string, displayName?: string) {
+    updateCustomCommand(id, { command, displayName });
+    setCustomCmds(getCustomCommands());
+  }
+
+  function handleDeleteCustomCmd(id: string) {
+    deleteCustomCommand(id);
+    setCustomCmds(getCustomCommands());
+  }
+
+  function handleClearCustomCmds() {
+    if (window.confirm(t(lang, "confirmClearCustomCommands"))) {
+      clearCustomCommands();
+      setCustomCmds([]);
+    }
+  }
+
+  function handleClearHistory() {
+    if (window.confirm(t(lang, "confirmClearHistory"))) {
+      clearHistory();
+      setHistoryList([]);
+    }
+  }
+
+  function handleSearchHistory() {
+    setHistoryList(searchHistory(cmdSearch, 100));
+  }
+
+  // 过滤后的系统命令
+  const filteredSysCmds = useMemo(() => {
+    if (!cmdSearch) return SYSTEM_COMMANDS;
+    const q = cmdSearch.toLowerCase();
+    return SYSTEM_COMMANDS.filter(c => c.command.toLowerCase().includes(q));
+  }, [cmdSearch]);
+
+  // 过滤后的自定义命令
+  const filteredCustomCmds = useMemo(() => {
+    if (!cmdSearch) return customCmds;
+    const q = cmdSearch.toLowerCase();
+    return customCmds.filter(c =>
+      c.command.toLowerCase().includes(q) ||
+      c.displayName?.toLowerCase().includes(q)
+    );
+  }, [cmdSearch, customCmds]);
 
   const shortcutLabels: Record<string, string> = useMemo(
     () => ({
@@ -195,16 +261,16 @@ export function SettingsModal(props: { open: boolean; onClose: () => void; setti
           { id: "language", label: t(lang, "settingsLanguage"), icon: <Globe className="size-4" /> },
           { id: "layout", label: t(lang, "settingsLayout"), icon: <Layout className="size-4" /> },
           { id: "shortcuts", label: t(lang, "settingsShortcuts"), icon: <Keyboard className="size-4" /> },
-          { id: "commonCommands", label: t(lang, "settingsCommonCommands"), icon: <Terminal className="size-4" /> },
+          { id: "commandManager", label: t(lang, "commandManagerTitle"), icon: <Terminal className="size-4" /> },
           { id: "importExport", label: t(lang, "settingsImportExport"), icon: <FileJson className="size-4" /> },
         ].map((tabDef) => (
           <button
             key={tabDef.id}
-            onClick={() => setTab(tabDef.id as any)}
+            onClick={() => setTab(tabDef.id as typeof tab)}
             className={[
               "font-medium border-b-2 transition-colors whitespace-nowrap",
               isCompact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm",
-              tab === (tabDef.id as any)
+              tab === tabDef.id
                 ? "border-[var(--color-blue-500)] text-white"
                 : "border-transparent text-[var(--color-gray-400)] hover:text-[var(--color-gray-300)]",
             ].join(" ")}
@@ -408,62 +474,179 @@ export function SettingsModal(props: { open: boolean; onClose: () => void; setti
         </div>
       ) : null}
 
-      {tab === "commonCommands" ? (
+      {tab === "commandManager" ? (
         <div className={["flex flex-col", isCompact ? "gap-3" : "gap-4"].join(" ")}>
-          <div className="flex items-center justify-between">
-            <div className={["font-medium text-[var(--color-gray-300)]", isCompact ? "text-xs" : "text-sm"].join(" ")}>{t(lang, "settingsCommonCommands")}</div>
-            <div className="flex gap-2">
+          {/* 子标签页：系统命令 / 自定义命令 / 历史记录 */}
+          <div className={["flex gap-1 border-b border-[var(--color-gray-800)] -mt-1", isCompact ? "mb-2 px-1" : "mb-3 px-2"].join(" ")}>
+            {[
+              { id: "system" as const, label: t(lang, "systemCommands") },
+              { id: "custom" as const, label: t(lang, "customCommands") },
+              { id: "history" as const, label: t(lang, "commandHistory") },
+            ].map((subTab) => (
               <button
-                disabled={busy}
-                className={["rounded bg-[var(--color-gray-800)] text-[var(--color-gray-300)] hover:bg-[var(--color-gray-700)]", isCompact ? "px-2.5 py-1 text-xs" : "px-3 py-2 text-sm"].join(" ")}
-                onClick={() => setS({ ...s, commonCommands: getDefaultCommonCommands(lang) })}
+                key={subTab.id}
+                onClick={() => setCmdTab(subTab.id)}
+                className={[
+                  "font-medium border-b-2 transition-colors whitespace-nowrap -mb-px",
+                  isCompact ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm",
+                  cmdTab === subTab.id
+                    ? "border-[var(--color-blue-500)] text-white"
+                    : "border-transparent text-[var(--color-gray-500)] hover:text-[var(--color-gray-300)]",
+                ].join(" ")}
               >
-                {t(lang, "resetDefault")}
+                {subTab.label}
               </button>
-              <button
-                disabled={busy}
-                className={["rounded bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]", isCompact ? "px-2.5 py-1 text-xs" : "px-3 py-2 text-sm"].join(" ")}
-                onClick={addCommand}
-              >
-                {t(lang, "add")}
-              </button>
-            </div>
-          </div>
-
-          <div className={["flex flex-col", isCompact ? "gap-2" : "gap-3"].join(" ")}>
-            {(s.commonCommands ?? []).map((c) => (
-              <div key={c.id} className={["border border-[var(--color-gray-800)] rounded-lg bg-[var(--color-gray-900)]", isCompact ? "p-2.5" : "p-4"].join(" ")}>
-                <div className={["flex gap-3 items-center", isCompact ? "mb-2" : "mb-3"].join(" ")}>
-                  <input
-                    value={c.name}
-                    onChange={(e) => updateCommand(c.id, { name: e.currentTarget.value })}
-                    className={[
-                      "flex-1 bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] rounded text-white placeholder:text-[var(--color-gray-500)] focus:outline-none focus:border-[var(--color-blue-500)]",
-                      isCompact ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"
-                    ].join(" ")}
-                    placeholder={t(lang, "displayName")}
-                  />
-                  <button
-                    disabled={busy}
-                    className={["rounded bg-[var(--color-gray-800)] text-red-300 hover:bg-[var(--color-gray-700)]", isCompact ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"].join(" ")}
-                    onClick={() => removeCommand(c.id)}
-                  >
-                    {t(lang, "delete")}
-                  </button>
-                </div>
-                <textarea
-                  value={c.command}
-                  onChange={(e) => updateCommand(c.id, { command: e.currentTarget.value })}
-                  rows={isCompact ? 1 : 2}
-                  className={[
-                    "w-full bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] rounded text-white placeholder:text-[var(--color-gray-500)] focus:outline-none focus:border-[var(--color-blue-500)] resize-y",
-                    isCompact ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"
-                  ].join(" ")}
-                  placeholder={t(lang, "commandContentPlaceholder")}
-                />
-              </div>
             ))}
           </div>
+
+          {/* 搜索框 */}
+          <div className="relative">
+            <Search className={["absolute left-2 top-1/2 -translate-y-1/2 text-[var(--color-gray-500)]", isCompact ? "size-3" : "size-4"].join(" ")} />
+            <input
+              value={cmdSearch}
+              onChange={(e) => {
+                setCmdSearch(e.currentTarget.value);
+                if (cmdTab === "history") handleSearchHistory();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && cmdTab === "history") handleSearchHistory();
+              }}
+              placeholder={t(lang, "search")}
+              className={[
+                "w-full bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] rounded text-white placeholder:text-[var(--color-gray-500)] focus:outline-none focus:border-[var(--color-blue-500)]",
+                isCompact ? "pl-7 pr-2 py-1 text-xs" : "pl-8 pr-3 py-2 text-sm"
+              ].join(" ")}
+            />
+          </div>
+
+          {/* 系统命令 */}
+          {cmdTab === "system" && (
+            <div className={["flex flex-col", isCompact ? "gap-1.5" : "gap-2"].join(" ")}>
+              <div className="flex justify-end">
+                <button
+                  onClick={handleResetSysCmds}
+                  className={["rounded bg-[var(--color-gray-800)] text-[var(--color-gray-300)] hover:bg-[var(--color-gray-700)]", isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"].join(" ")}
+                >
+                  {t(lang, "resetDefault")}
+                </button>
+              </div>
+              <div className="max-h-64 overflow-y-auto border border-[var(--color-gray-800)] rounded-lg">
+                {filteredSysCmds.map((cmd) => (
+                  <div
+                    key={cmd.id}
+                    className={[
+                      "flex items-center gap-2 px-3 py-2 border-b border-[var(--color-gray-800)] last:border-b-0",
+                      disabledSys.has(cmd.id) ? "opacity-50" : "",
+                    ].join(" ")}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!disabledSys.has(cmd.id)}
+                      onChange={() => handleToggleSysCmd(cmd.id)}
+                      className="size-4 rounded accent-blue-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className={["text-[var(--color-gray-200)] truncate", isCompact ? "text-xs" : "text-sm"].join(" ")}>{t(lang, cmd.displayNameKey)}</div>
+                      <div className={["text-[var(--color-gray-500)] font-mono truncate", isCompact ? "text-[10px]" : "text-xs"].join(" ")}>{cmd.command}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 自定义命令 */}
+          {cmdTab === "custom" && (
+            <div className={["flex flex-col", isCompact ? "gap-2" : "gap-3"].join(" ")}>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={handleClearCustomCmds}
+                  className={["rounded bg-[var(--color-gray-800)] text-red-300 hover:bg-[var(--color-gray-700)]", isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"].join(" ")}
+                >
+                  {t(lang, "clearAll")}
+                </button>
+                <button
+                  onClick={handleAddCustomCmd}
+                  className={["rounded bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]", isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"].join(" ")}
+                >
+                  {t(lang, "add")}
+                </button>
+              </div>
+              <div className="max-h-64 overflow-y-auto border border-[var(--color-gray-800)] rounded-lg">
+                {filteredCustomCmds.length === 0 ? (
+                  <div className={["text-center text-[var(--color-gray-500)] py-4", isCompact ? "text-xs" : "text-sm"].join(" ")}>
+                    {t(lang, "noCustomCommands")}
+                  </div>
+                ) : (
+                  filteredCustomCmds.map((cmd) => (
+                    <div key={cmd.id} className={["border-b border-[var(--color-gray-800)] last:border-b-0", isCompact ? "p-2" : "p-3"].join(" ")}>
+                      <div className={["flex gap-2 items-center", isCompact ? "mb-1.5" : "mb-2"].join(" ")}>
+                        <input
+                          value={cmd.displayName || ""}
+                          onChange={(e) => handleUpdateCustomCmd(cmd.id, cmd.command, e.currentTarget.value)}
+                          placeholder={t(lang, "displayName")}
+                          className={[
+                            "flex-1 bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] rounded text-white placeholder:text-[var(--color-gray-500)] focus:outline-none focus:border-[var(--color-blue-500)]",
+                            isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"
+                          ].join(" ")}
+                        />
+                        <button
+                          onClick={() => handleDeleteCustomCmd(cmd.id)}
+                          className={["rounded bg-[var(--color-gray-800)] text-red-300 hover:bg-[var(--color-gray-700)]", isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"].join(" ")}
+                        >
+                          {t(lang, "delete")}
+                        </button>
+                      </div>
+                      <input
+                        value={cmd.command}
+                        onChange={(e) => handleUpdateCustomCmd(cmd.id, e.currentTarget.value, cmd.displayName)}
+                        placeholder={t(lang, "commandContentPlaceholder")}
+                        className={[
+                          "w-full bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] rounded text-white placeholder:text-[var(--color-gray-500)] focus:outline-none focus:border-[var(--color-blue-500)] font-mono",
+                          isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"
+                        ].join(" ")}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 历史记录 */}
+          {cmdTab === "history" && (
+            <div className={["flex flex-col", isCompact ? "gap-2" : "gap-3"].join(" ")}>
+              <div className="flex justify-end">
+                <button
+                  onClick={handleClearHistory}
+                  className={["rounded bg-[var(--color-gray-800)] text-red-300 hover:bg-[var(--color-gray-700)]", isCompact ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm"].join(" ")}
+                >
+                  {t(lang, "clearAll")}
+                </button>
+              </div>
+              <div className="max-h-64 overflow-y-auto border border-[var(--color-gray-800)] rounded-lg">
+                {historyList.length === 0 ? (
+                  <div className={["text-center text-[var(--color-gray-500)] py-4", isCompact ? "text-xs" : "text-sm"].join(" ")}>
+                    {t(lang, "noHistory")}
+                  </div>
+                ) : (
+                  historyList.map((cmd) => (
+                    <div
+                      key={cmd.id}
+                      className={["border-b border-[var(--color-gray-800)] last:border-b-0 px-3 py-2 hover:bg-[var(--color-gray-800)]", isCompact ? "py-1.5" : ""].join(" ")}
+                    >
+                      <div className={["text-[var(--color-gray-200)] font-mono truncate", isCompact ? "text-xs" : "text-sm"].join(" ")}>{cmd.command}</div>
+                      {cmd.lastUsedAt && (
+                        <div className={["text-[var(--color-gray-500)]", isCompact ? "text-[10px]" : "text-xs"].join(" ")}>
+                          {new Date(cmd.lastUsedAt).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
 
