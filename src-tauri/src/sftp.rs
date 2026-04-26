@@ -132,9 +132,46 @@ pub fn sftp_get(session: &PtySession, remote: &str, local: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn sftp_get_partial(session: &PtySession, remote: &str, local: &str) -> Result<u64> {
+    let offset = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
+    let cmd = if offset > 0 {
+        format!("get -a {remote} {local}")
+    } else {
+        format!("get {remote} {local}")
+    };
+    let _ = sftp_exec(session, &cmd, Duration::from_secs(600))?;
+    let final_size = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
+    Ok(final_size)
+}
+
 pub fn sftp_put(session: &PtySession, local: &str, remote: &str) -> Result<()> {
     let _ = sftp_exec(session, &format!("put {local} {remote}"), Duration::from_secs(600))?;
     Ok(())
+}
+
+pub fn sftp_put_partial(session: &PtySession, local: &str, remote: &str) -> Result<u64> {
+    let offset = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
+    let cmd = if offset > 0 {
+        format!("put -a {local} {remote}")
+    } else {
+        format!("put {local} {remote}")
+    };
+    let _ = sftp_exec(session, &cmd, Duration::from_secs(600))?;
+    Ok(offset)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFileInfo {
+    pub exists: bool,
+    pub size: u64,
+}
+
+pub fn local_file_info(path: &str) -> LocalFileInfo {
+    match std::fs::metadata(path) {
+        Ok(m) => LocalFileInfo { exists: true, size: m.len() },
+        Err(_) => LocalFileInfo { exists: false, size: 0 },
+    }
 }
 
 pub fn sftp_ls(session: &PtySession, path: Option<&str>) -> Result<Vec<RemoteEntry>> {

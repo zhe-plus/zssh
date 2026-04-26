@@ -5,7 +5,12 @@ import { SessionEditor } from "./components/SessionEditor";
 import { TabBar } from "./components/TabBar";
 import { Modal } from "./components/Modal";
 import { TerminalView } from "./components/TerminalView";
+import { TerminalSearchBar } from "./components/TerminalSearchBar";
+import { CommandHistoryModal } from "./components/CommandHistoryModal";
+import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
+
 import { SftpPanel } from "./components/SftpPanel";
+import { MonitorPanel } from "./components/MonitorPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import {
   GroupNameModal,
@@ -15,7 +20,7 @@ import {
 import { useAppStore } from "./store/appStore";
 import type { AuthPromptEvent, HostKeyPromptEvent, SessionPublic, UUID } from "./types";
 import { api } from "./api";
-import { Folder, PlugZap } from "lucide-react";
+import { Folder, PlugZap, Activity } from "lucide-react";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { dbg } from "./lib/debug";
@@ -23,33 +28,86 @@ import { DEFAULT_COMMON_COMMANDS, getDefaultCommonCommands } from "./lib/default
 import { t, tf } from "./lib/i18n";
 import { DEFAULT_SHORTCUTS } from "./lib/defaultShortcuts";
 import { applyTheme, DEFAULT_THEME } from "./lib/themes";
+import { checkPaste, type PasteCheckResult } from "./lib/pasteProtection";
+import { logError, generateReportText, getErrorCount } from "./lib/errorLogger";
 import type { Terminal } from "xterm";
+import type { SearchAddon } from "@xterm/addon-search";
 
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null; errorId: string | null }> {
   constructor(props: { children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, errorId: null };
   }
 
   static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
+    return { hasError: true, error, errorId: null };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("ErrorBoundary caught:", error, errorInfo);
+    // Log to persistent store and console
+    const logged = logError(error, errorInfo);
+    this.setState({ errorId: logged.id });
   }
 
+  handleCopyReport = () => {
+    if (!this.state.error) return;
+    const text = generateReportText({
+      id: this.state.errorId ?? "unknown",
+      timestamp: Date.now(),
+      message: this.state.error.message,
+      stack: this.state.error.stack ?? undefined,
+      componentStack: "",
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
+      appVersion: "0.1.0",
+    });
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
   render() {
-    if (this.state.hasError) {
+    if (this.state.hasError && this.state.error) {
+      const errorCount = getErrorCount();
       return (
-        <div className="w-12 h-full bg-[var(--color-gray-900)] border-r border-[var(--color-gray-800)] flex flex-col items-center justify-center p-2">
-          <div className="text-xs text-red-400 text-center mb-2">Error</div>
-          <button
-            className="px-2 py-1 text-xs bg-[var(--color-gray-800)] rounded text-[var(--color-gray-300)] hover:bg-[var(--color-gray-700)]"
-            onClick={() => this.setState({ hasError: false, error: null })}
-          >
-            Retry
-          </button>
+        <div className="w-full h-full bg-[var(--color-gray-950)] text-[var(--color-gray-300)] flex items-center justify-center p-6">
+          <div className="max-w-lg w-full bg-[var(--color-gray-900)] border border-[var(--color-gray-700)] rounded-lg p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-red-400 font-medium">⚠ Error</span>
+              {errorCount > 1 && (
+                <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300">
+                  +{errorCount - 1} more
+                </span>
+              )}
+            </div>
+
+            <div className="text-sm text-[var(--color-gray-200)] mb-3 font-mono break-all max-h-24 overflow-auto">
+              {this.state.error.message}
+            </div>
+
+            {this.state.error.stack && (
+              <details className="mb-4">
+                <summary className="text-xs cursor-pointer text-[var(--color-gray-500)] hover:text-[var(--color-gray-300)] mb-2">
+                  Stack trace
+                </summary>
+                <pre className="text-xs text-[var(--color-gray-500)] overflow-auto max-h-32 whitespace-pre-wrap">
+                  {this.state.error.stack}
+                </pre>
+              </details>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <button
+                className="px-3 py-1.5 text-xs bg-[var(--color-gray-800)] rounded text-[var(--color-gray-300)] hover:bg-[var(--color-gray-700)]"
+                onClick={() => this.setState({ hasError: false, error: null, errorId: null })}
+              >
+                Retry
+              </button>
+              <button
+                className="px-3 py-1.5 text-xs bg-[var(--color-blue-600)] rounded text-white hover:bg-[var(--color-blue-700)]"
+                onClick={this.handleCopyReport}
+              >
+                Copy Report
+              </button>
+            </div>
+          </div>
         </div>
       );
     }
@@ -70,6 +128,11 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const activeTermRef = useRef<Terminal | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [commandHistoryOpen, setCommandHistoryOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const [pasteCheckResult, setPasteCheckResult] = useState<PasteCheckResult | null>(null);
   const [groupNameModal, setGroupNameModal] = useState<{ mode: "new" | "rename"; groupId: UUID | null; initial: string } | null>(null);
   const [groupNameValue, setGroupNameValue] = useState("");
 
@@ -186,6 +249,29 @@ function App() {
     };
   }, [isTauri, openSettings, toggleSidebar]);
 
+  // 粘贴安全拦截：监听全局 paste 事件，检测多行/危险命令
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const inXterm = !!target?.closest?.(".xterm");
+      if (!inXterm) return;
+
+      const text = e.clipboardData?.getData("text") ?? "";
+      if (!text) return;
+
+      const result = checkPaste(text);
+      if (result.safe) return; // 安全，放行
+
+      // 拦截并显示确认对话框
+      e.preventDefault();
+      e.stopPropagation();
+      setPasteCheckResult(result);
+    }
+
+    document.addEventListener("paste", onPaste, { capture: true });
+    return () => document.removeEventListener("paste", onPaste, { capture: true });
+  }, []);
+
   const addConnection = useCallback(() => {
     setEditingSession(null);
     setEditorOpen(true);
@@ -205,6 +291,39 @@ function App() {
     const text = activeTermRef.current?.getSelection?.() || window.getSelection()?.toString() || "";
     if (!text) return;
     navigator.clipboard.writeText(text).catch(() => undefined);
+  }, []);
+
+  const toggleSearch = useCallback(() => {
+    setSearchVisible((v) => !v);
+  }, []);
+
+  const openCommandHistory = useCallback(() => {
+    setCommandHistoryOpen(true);
+  }, []);
+
+  const handleCommandSelect = useCallback(
+    (cmd: string) => {
+      const ptyId = store.tabs.find((t) => t.id === store.activeTabId)?.ptyId;
+      if (ptyId) {
+        api.ptySend(ptyId, `${cmd}\n`).catch(() => undefined);
+      }
+    },
+    [store],
+  );
+
+  const handlePasteExecute = useCallback(
+    (content: string) => {
+      const ptyId = store.tabs.find((t) => t.id === store.activeTabId)?.ptyId;
+      if (ptyId) {
+        api.ptySend(ptyId, content).catch(() => undefined);
+      }
+      setPasteCheckResult(null);
+    },
+    [store],
+  );
+
+  const handlePasteCancel = useCallback(() => {
+    setPasteCheckResult(null);
   }, []);
 
   const closeCurrentTab = useCallback(() => {
@@ -242,8 +361,10 @@ function App() {
       newTab: addConnection,
       openSettings,
       copy: copySelection,
+      terminalSearch: toggleSearch,
+      commandHistory: openCommandHistory,
     }),
-    [newTempConnection, openCommandPalette, toggleSidebar, closeCurrentTab, nextTab, prevTab, addConnection, openSettings, copySelection],
+    [newTempConnection, openCommandPalette, toggleSidebar, closeCurrentTab, nextTab, prevTab, addConnection, openSettings, copySelection, toggleSearch, openCommandHistory],
   );
 
   useShortcuts(store.settings?.shortcuts, shortcutHandlers);
@@ -414,35 +535,46 @@ function App() {
                       <div className="text-xs text-[var(--color-gray-500)] truncate">{activeTab ? activeTab.title : t(lang, "noTabs")}</div>
                     )}
                   </div>
-                  <div className="flex-1 min-h-0 h-full">
-                    {store.tabs.map((t) => (
-                      <div key={t.id} className="w-full h-full" style={{ display: t.id === activeTab.id ? "block" : "none" }}>
-                        <TerminalView
-                          ptyId={t.ptyId}
-                          visible={t.id === activeTab.id}
-                          settings={
-                            store.settings ?? {
-                              theme: "github-dark",
-                              fontFamily: "Consolas",
-                              fontSize: 14,
-                              lineHeight: 1.2,
-                              language: "zh-CN",
-                              layoutMode: "compact",
-                              shortcuts: DEFAULT_SHORTCUTS,
-                              commonCommands: DEFAULT_COMMON_COMMANDS,
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    <TerminalSearchBar
+                      searchAddon={searchAddonRef.current}
+                      visible={searchVisible}
+                      onClose={() => setSearchVisible(false)}
+                      lang={lang}
+                    />
+                    <div className="flex-1 min-h-0">
+                      {store.tabs.map((t) => (
+                        <div key={t.id} className="w-full h-full" style={{ display: t.id === activeTab.id ? "block" : "none" }}>
+                          <TerminalView
+                            ptyId={t.ptyId}
+                            visible={t.id === activeTab.id}
+                            settings={
+                              store.settings ?? {
+                                theme: "github-dark",
+                                fontFamily: "Consolas",
+                                fontSize: 14,
+                                lineHeight: 1.2,
+                                language: "zh-CN",
+                                layoutMode: "compact",
+                                shortcuts: DEFAULT_SHORTCUTS,
+                                commonCommands: DEFAULT_COMMON_COMMANDS,
+                              }
                             }
-                          }
-                          onSize={
-                            t.id === activeTab.id
-                              ? (cols, rows) => {
-                                  setLastTermSize({ cols, rows });
-                                  if (t.ptyId) api.ptyResize(t.ptyId, cols, rows).catch(() => undefined);
-                                }
-                              : undefined
-                          }
-                        />
-                      </div>
-                    ))}
+                            onSize={
+                              t.id === activeTab.id
+                                ? (cols, rows) => {
+                                    setLastTermSize({ cols, rows });
+                                    if (t.ptyId) api.ptyResize(t.ptyId, cols, rows).catch(() => undefined);
+                                  }
+                                : undefined
+                            }
+                            onSearchAddon={(addon) => {
+                              if (t.id === activeTab?.id) searchAddonRef.current = addon;
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </Panel>
                 <PanelResizeHandle
@@ -536,6 +668,19 @@ function App() {
                     SFTP
                   </button>
 
+                  {/* Temporarily hidden - requires SSH key auth */}
+                  <button
+                    disabled={true}
+                    style={{ display: 'none' }}
+                    className={[
+                      "px-2 py-1 rounded text-xs flex items-center gap-1.5",
+                      activeTab?.ptyId ? "bg-[var(--color-gray-800)] text-[var(--color-gray-400)] hover:bg-[var(--color-gray-700)]" : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
+                    ].join(" ")}
+                  >
+                    <Activity className="size-3.5" />
+                    {t(lang, "monitor")}
+                  </button>
+
                   <select
                     value=""
                     disabled={!activeTab?.ptyId}
@@ -575,39 +720,50 @@ function App() {
                     <div className="text-xs text-[var(--color-gray-500)] truncate">{activeTab ? activeTab.title : t(lang, "noTabs")}</div>
                   )}
                 </div>
-                <div className="flex-1 min-h-0">
-                  {store.tabs.map((t) => (
-                    <div key={t.id} className="w-full h-full" style={{ display: t.id === activeTab.id ? "block" : "none" }}>
-                      <TerminalView
-                        ptyId={t.ptyId}
-                        visible={t.id === activeTab.id}
-                        onTerminal={(term) => {
-                          if (t.id !== activeTab.id) return;
-                          activeTermRef.current = term;
-                        }}
-                        settings={
-                          store.settings ?? {
-                            theme: "github-dark",
-                            fontFamily: "Consolas",
-                            fontSize: 14,
-                            lineHeight: 1.2,
-                            language: "zh-CN",
-                            layoutMode: "compact",
-                            shortcuts: DEFAULT_SHORTCUTS,
-                            commonCommands: DEFAULT_COMMON_COMMANDS,
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <TerminalSearchBar
+                    searchAddon={searchAddonRef.current}
+                    visible={searchVisible}
+                    onClose={() => setSearchVisible(false)}
+                    lang={lang}
+                  />
+                  <div className="flex-1 min-h-0">
+                    {store.tabs.map((t) => (
+                      <div key={t.id} className="w-full h-full" style={{ display: t.id === activeTab.id ? "block" : "none" }}>
+                        <TerminalView
+                          ptyId={t.ptyId}
+                          visible={t.id === activeTab.id}
+                          onTerminal={(term) => {
+                            if (t.id !== activeTab.id) return;
+                            activeTermRef.current = term;
+                          }}
+                          settings={
+                            store.settings ?? {
+                              theme: "github-dark",
+                              fontFamily: "Consolas",
+                              fontSize: 14,
+                              lineHeight: 1.2,
+                              language: "zh-CN",
+                              layoutMode: "compact",
+                              shortcuts: DEFAULT_SHORTCUTS,
+                              commonCommands: DEFAULT_COMMON_COMMANDS,
+                            }
                           }
-                        }
-                        onSize={
-                          t.id === activeTab.id
-                            ? (cols, rows) => {
-                                setLastTermSize({ cols, rows });
-                                if (t.ptyId) api.ptyResize(t.ptyId, cols, rows).catch(() => undefined);
-                              }
-                            : undefined
-                        }
-                      />
-                    </div>
-                  ))}
+                          onSize={
+                            t.id === activeTab.id
+                              ? (cols, rows) => {
+                                  setLastTermSize({ cols, rows });
+                                  if (t.ptyId) api.ptyResize(t.ptyId, cols, rows).catch(() => undefined);
+                                }
+                              : undefined
+                          }
+                          onSearchAddon={(addon) => {
+                            if (t.id === activeTab?.id) searchAddonRef.current = addon;
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )
@@ -790,6 +946,33 @@ function App() {
       >
         <div className="text-sm text-[var(--color-gray-200)] whitespace-pre-wrap">{connectError}</div>
       </Modal>
+
+      <CommandHistoryModal
+        open={commandHistoryOpen}
+        lang={lang}
+        onSelect={handleCommandSelect}
+        onClose={() => setCommandHistoryOpen(false)}
+      />
+
+      {pasteCheckResult && (
+        <PasteConfirmDialog
+          result={pasteCheckResult}
+          lang={lang}
+          onExecute={handlePasteExecute}
+          onCancel={handlePasteCancel}
+        />
+      )}
+
+      {monitorOpen && (
+        <MonitorPanel
+          ptyId={activeTab?.ptyId ?? null}
+          sessionId={activeTab?.sessionId ?? null}
+          open={monitorOpen}
+          onClose={() => setMonitorOpen(false)}
+          lang={lang}
+        />
+      )}
+
     </div>
   );
 }

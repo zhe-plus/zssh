@@ -58,6 +58,7 @@ export interface SessionPublic {
   sortIndex: number;
   createdAt: number;
   updatedAt: number;
+  proxy?: string | null;
 }
 
 export type UpsertAuthInput =

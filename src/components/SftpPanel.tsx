@@ -4,7 +4,17 @@ import { api } from "../api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t, tf } from "../lib/i18n";
-import { RefreshCw, ChevronUp, FolderPlus, Upload, Columns2, Rows2, X } from "lucide-react";
+import { RefreshCw, ChevronUp, FolderPlus, Upload, Columns2, Rows2, X, Search, File, Folder, Eye, EyeOff, RefreshCw as SyncIcon } from "lucide-react";
+import { TransferProgress } from "./TransferProgress";
+import { FolderSyncDialog } from "./FolderSyncDialog";
+import { RemoteFileEditor } from "./RemoteFileEditor";
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
 function basename(p: string) {
   const parts = p.replace(/\\/g, "/").split("/");
@@ -23,6 +33,16 @@ export function SftpPanel(props: {
   const [entries, setEntries] = useState<RemoteEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filterKeyword, setFilterKeyword] = useState("");
+  const [filterType, setFilterType] = useState<"all" | "dir" | "file">("all");
+  const [showHidden, setShowHidden] = useState(true);
+  const [transfer, setTransfer] = useState<{
+    fileName: string;
+    status: "transferring" | "complete" | "failed";
+    progress: number;
+  } | null>(null);
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [editingFile, setEditingFile] = useState<{ name: string; path: string } | null>(null);
   const [menu, setMenu] = useState<{
     open: boolean;
     x: number;
@@ -106,16 +126,42 @@ export function SftpPanel(props: {
           const name = basename(p);
           const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
           const remote = base ? `${base}/${name}` : name;
-          await api.sftpPut(props.ptyId, p, remote);
+
+          // Check for resume
+          const info = await api.sftpLocalFileInfo(p).catch(() => null);
+          const shouldResume = info?.exists && info!.size > 0;
+          let useResume = false;
+
+          if (shouldResume) {
+            useResume = window.confirm(
+              tf(lang, "transferResumeMessage", { size: formatSize(info!.size) }),
+            );
+          }
+
+          // Show transfer progress
+          setTransfer({ fileName: name, status: "transferring", progress: 0 });
+
+          try {
+            if (useResume) {
+              await api.sftpPutPartial(props.ptyId!, p, remote);
+            } else {
+              await api.sftpPut(props.ptyId!, p, remote);
+            }
+            setTransfer({ fileName: name, status: "complete", progress: 100 });
+          } catch {
+            setTransfer({ fileName: name, status: "failed", progress: 0 });
+            throw new Error(`Upload failed: ${name}`);
+          }
         }
         await refresh();
       } catch (e) {
         setError(String(e));
       } finally {
         setBusy(false);
+        setTimeout(() => setTransfer(null), 3000);
       }
     },
-    [props.ptyId, cwd, refresh],
+    [props.ptyId, cwd, refresh, lang],
   );
 
   useEffect(() => {
@@ -143,6 +189,23 @@ export function SftpPanel(props: {
     });
     return copy;
   }, [entries]);
+
+  const filteredEntries = useMemo(() => {
+    let list = dirsFirst;
+    // Type filter
+    if (filterType === "dir") list = list.filter((e) => e.kind === "dir");
+    else if (filterType === "file") list = list.filter((e) => e.kind !== "dir");
+    // Hidden files filter
+    if (!showHidden) {
+      list = list.filter((e) => !e.name.startsWith("."));
+    }
+    // Keyword search
+    if (filterKeyword.trim()) {
+      const q = filterKeyword.toLowerCase();
+      list = list.filter((e) => e.name.toLowerCase().includes(q));
+    }
+    return list;
+  }, [dirsFirst, filterType, showHidden, filterKeyword]);
 
   async function cd(name: string) {
     if (!props.ptyId) return;
@@ -245,14 +308,37 @@ export function SftpPanel(props: {
     }
     if (!dir || Array.isArray(dir)) return;
     const local = `${dir.replace(/\\/g, "/")}/${basename(entry.name)}`;
+
+    // Check for resume
+    const info = await api.sftpLocalFileInfo(local).catch(() => null);
+    const shouldResume = info?.exists && info!.size > 0;
+    let useResume = false;
+
+    if (shouldResume) {
+      useResume = window.confirm(
+        tf(lang, "transferResumeMessage", { size: formatSize(info!.size) }),
+      );
+    }
+
     setBusy(true);
     setError(null);
+
+    // Show transfer progress
+    setTransfer({ fileName: entry.name, status: "transferring", progress: 0 });
+
     try {
-      await api.sftpGet(props.ptyId, entry.name, local);
+      if (useResume) {
+        await api.sftpGetPartial(props.ptyId!, entry.name, local);
+      } else {
+        await api.sftpGet(props.ptyId!, entry.name, local);
+      }
+      setTransfer({ fileName: entry.name, status: "complete", progress: 100 });
     } catch (e) {
+      setTransfer({ fileName: entry.name, status: "failed", progress: 0 });
       setError(String(e));
     } finally {
       setBusy(false);
+      setTimeout(() => setTransfer(null), 3000);
     }
   }
 
@@ -308,6 +394,16 @@ export function SftpPanel(props: {
 
   return (
     <div className="h-full w-full flex flex-col bg-[var(--color-gray-950)]">
+      {/* Transfer Progress */}
+      {transfer ? (
+        <TransferProgress
+          fileName={transfer.fileName}
+          status={transfer.status}
+          progress={transfer.progress}
+          lang={lang}
+        />
+      ) : null}
+
       <div className="h-9 bg-[var(--color-gray-900)] border-b border-[var(--color-gray-800)] flex items-center gap-1 px-2">
         {props.onClose ? (
           <button
@@ -366,6 +462,14 @@ export function SftpPanel(props: {
         >
           <Upload className="size-4" />
         </button>
+        <button
+          onClick={() => setSyncDialogOpen(true)}
+          disabled={busy || !props.ptyId}
+          className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-50"
+          title={t(lang, "folderSyncTitle")}
+        >
+          <SyncIcon className="size-4" />
+        </button>
 
         <div className="flex-1 min-w-0 px-2" title={cwd}>
           <input
@@ -388,6 +492,63 @@ export function SftpPanel(props: {
 
       {error ? <div className="px-2 py-2 text-red-400 text-xs">{error}</div> : null}
 
+      {/* 过滤工具栏 */}
+      <div className="flex items-center gap-1.5 px-2 py-1 border-b border-[var(--color-gray-800)] bg-[var(--color-gray-900)]">
+        <div className="relative flex items-center">
+          <Search className="absolute left-2 size-3 text-[var(--color-gray-500)]" />
+          <input
+            value={filterKeyword}
+            onChange={(e) => setFilterKeyword(e.target.value)}
+            placeholder={`${t(lang, "sftpFilterPlaceholder")}...`}
+            className="h-6 w-32 pl-6 pr-2 rounded text-xs bg-[var(--color-gray-950)] border border-[var(--color-gray-700)] text-white placeholder:text-[var(--color-gray-500)] outline-none focus:border-[var(--color-blue-500)]"
+          />
+        </div>
+
+        {/* 类型筛选按钮组 */}
+        <div className="flex rounded overflow-hidden border border-[var(--color-gray-700)]">
+          {(["all", "dir", "file"] as const).map((type) => (
+            <button
+              key={type}
+              onClick={() => setFilterType(type === filterType ? "all" : type)}
+              title={
+                type === "all"
+                  ? t(lang, "sftpFilterAll")
+                  : type === "dir"
+                    ? t(lang, "sftpFilterDirs")
+                    : t(lang, "sftpFilterFiles")
+              }
+              className={[
+                "px-1.5 h-6 text-[11px] leading-none transition-colors",
+                filterType === type
+                  ? "bg-blue-600 text-white"
+                  : "bg-transparent text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)]",
+              ].join(" ")}
+            >
+              {type === "all" ? t(lang, "sftpFilterAll") : type === "dir" ? <Folder className="size-3" /> : <File className="size-3" />}
+            </button>
+          ))}
+        </div>
+
+        {/* 隐藏文件开关 */}
+        <button
+          onClick={() => setShowHidden((v) => !v)}
+          title={showHidden ? t(lang, "sftpHideHidden") : t(lang, "sftpShowHidden")}
+          className={[
+            "w-7 h-6 flex items-center justify-center rounded text-xs transition-colors",
+            showHidden
+              ? "bg-[var(--color-gray-700)] text-[var(--color-gray-300)] hover:bg-[var(--color-gray-600)]"
+              : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)] hover:bg-[var(--color-gray-700)]",
+          ].join(" ")}
+        >
+          {showHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+        </button>
+
+        <div className="flex-1" />
+        <span className="text-[10px] text-[var(--color-gray-500)] tabular-nums">
+          {filteredEntries.length}/{dirsFirst.length}
+        </span>
+      </div>
+
       <div className="flex-1 overflow-auto" onContextMenu={(ev) => openContextMenu(ev, null)}>
         <table className="w-full border-collapse text-sm">
           <thead>
@@ -396,7 +557,7 @@ export function SftpPanel(props: {
             </tr>
           </thead>
           <tbody>
-            {dirsFirst.map((e) => (
+            {filteredEntries.map((e) => (
               <tr
                 key={e.raw}
                 className="border-b border-[var(--color-gray-800)] hover:bg-[var(--color-gray-900)]"
@@ -476,6 +637,17 @@ export function SftpPanel(props: {
           {menu.entry && menu.entry.kind !== "dir" ? (
             <button
               className="w-full text-left px-3 py-2 text-sm text-[var(--color-gray-200)] hover:bg-[var(--color-gray-800)]"
+              onClick={() => {
+                closeMenu();
+                setEditingFile({ name: menu.entry!.name, path: `${cwd}/${menu.entry!.name}` });
+              }}
+            >
+              {t(lang, "edit")}
+            </button>
+          ) : null}
+          {menu.entry && menu.entry.kind !== "dir" ? (
+            <button
+              className="w-full text-left px-3 py-2 text-sm text-[var(--color-gray-200)] hover:bg-[var(--color-gray-800)]"
               onClick={() => menuDownload(menu.entry!).catch(() => undefined)}
             >
               {t(lang, "sftpDownload")}
@@ -495,6 +667,25 @@ export function SftpPanel(props: {
             </button>
           ) : null}
         </div>
+      ) : null}
+
+      <FolderSyncDialog
+        open={syncDialogOpen}
+        ptyId={props.ptyId}
+        remoteCwd={cwd}
+        onClose={() => setSyncDialogOpen(false)}
+        lang={lang}
+      />
+
+      {editingFile ? (
+        <RemoteFileEditor
+          open={!!editingFile}
+          ptyId={props.ptyId}
+          remotePath={editingFile.path}
+          fileName={editingFile.name}
+          onClose={() => setEditingFile(null)}
+          lang={lang}
+        />
       ) : null}
     </div>
   );

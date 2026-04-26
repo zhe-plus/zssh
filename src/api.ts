@@ -152,6 +152,15 @@ export const api = {
     dbg("info", "invoke pty_respond_hostkey", { ptyId, accept });
     return invoke<void>("pty_respond_hostkey", { ptyId, accept });
   },
+
+  // Silent monitoring command execution (no PTY output)
+  monitorExec(sessionId: UUID, command: string): Promise<string> {
+    dbg("debug", "invoke monitor_exec:start", { sessionId, commandLen: command.length });
+    const t0 = performance.now();
+    return invoke<string>("monitor_exec", { sessionId, command })
+      .finally(() => dbg("debug", "invoke monitor_exec:done", { ms: Math.round(performance.now() - t0) }));
+  },
+
   ptyProvideAuth(ptyId: UUID, value: string): Promise<void> {
     dbg("info", "invoke pty_provide_auth", { ptyId, len: value.length });
     return invoke<void>("pty_provide_auth", { ptyId, value });
@@ -255,5 +264,39 @@ export const api = {
         throw e;
       })
       .finally(() => dbg("info", "invoke sftp_put_cmd:done", { ptyId, ms: Math.round(performance.now() - t0) }));
+  },
+  sftpGetPartial(ptyId: UUID, remote: string, local: string): Promise<number> {
+    dbg("info", "invoke sftp_get_partial_cmd:start", { ptyId, remote, local });
+    const t0 = performance.now();
+    return invoke<number>("sftp_get_partial_cmd", { ptyId, remote, local })
+      .catch((e) => {
+        dbg("error", "invoke sftp_get_partial_cmd:error", { ptyId, message: String((e as any)?.message ?? e) });
+        throw e;
+      })
+      .finally(() => dbg("info", "invoke sftp_get_partial_cmd:done", { ptyId, ms: Math.round(performance.now() - t0) }));
+  },
+  sftpPutPartial(ptyId: UUID, local: string, remote: string): Promise<number> {
+    dbg("info", "invoke sftp_put_partial_cmd:start", { ptyId, local, remote });
+    const t0 = performance.now();
+    return invoke<number>("sftp_put_partial_cmd", { ptyId, local, remote })
+      .catch((e) => {
+        dbg("error", "invoke sftp_put_partial_cmd:error", { ptyId, message: String((e as any)?.message ?? e) });
+        throw e;
+      })
+      .finally(() => dbg("info", "invoke sftp_put_partial_cmd:done", { ptyId, ms: Math.round(performance.now() - t0) }));
+  },
+  sftpLocalFileInfo(path: string): Promise<{ exists: boolean; size: number }> {
+    return invoke<{ exists: boolean; size: number }>("sftp_local_file_info_cmd", { path });
+  },
+  diagnoseExport(): Promise<{
+    appVersion: string;
+    os: string;
+    arch: string;
+    tauriVersion: string;
+    rustVersion: string;
+    configSummary: { theme: string; language: string; sessionCount: number; groupCount: number; hasPasswordsSaved: boolean };
+    collectedAt: string;
+  }> {
+    return invoke("diagnose_export_cmd");
   },
 };

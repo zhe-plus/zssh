@@ -1,5 +1,6 @@
 mod config;
 mod dpapi;
+mod log;
 mod pty;
 mod sftp;
 mod ssh;
@@ -12,7 +13,7 @@ use crate::{
     },
     dpapi::{protect_string, unprotect_string},
     pty::{pty_kill, pty_resize, pty_write, spawn_pty, PtyKind},
-    sftp::{sftp_cd, sftp_get, sftp_ls, sftp_mkdir, sftp_pwd, sftp_put, sftp_rename, sftp_rm, RemoteEntry},
+    sftp::{sftp_cd, sftp_get, sftp_get_partial, local_file_info as sftp_local_file_info_fn, sftp_ls, sftp_mkdir, sftp_pwd, sftp_put, sftp_put_partial, sftp_rename, sftp_rm, LocalFileInfo, RemoteEntry},
     ssh::ssh_pwd,
     state::AppState,
     store::{known_hosts_path, load_config, save_config},
@@ -21,14 +22,15 @@ use anyhow::{anyhow, Result};
 use portable_pty::CommandBuilder;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{MenuBuilder, SubmenuBuilder};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 pub use crate::pty::strip_ansi_and_osc;
 
+// Legacy helper for backward compatibility during migration
 fn debug_enabled() -> bool {
-    cfg!(debug_assertions) && std::env::var_os("ZSSH_DEBUG").is_some()
+    crate::log::get_level() <= crate::log::Level::Debug
 }
 
 fn now_epoch_seconds() -> i64 {
@@ -747,6 +749,115 @@ fn pty_send(state: State<'_, AppState>, pty_id: Uuid, data: String) -> Result<()
     pty_write(pty, data.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Execute a command silently via SSH (no PTY) for monitoring purposes
+/// The command output is captured and returned, without displaying in terminal
+#[tauri::command]
+fn monitor_exec(state: State<'_, AppState>, session_id: Uuid, command: String) -> Result<String, String> {
+    use std::process::Command;
+
+    // Get the session info
+    let s = state.get_session(session_id).ok_or_else(|| "Session not found".to_string())?;
+    
+    let host = s.host.clone();
+    let port = s.port;
+    let username = s.username.clone();
+    
+    let password = match &s.auth {
+        config::Auth::Password { password_dpapi } => {
+            password_dpapi.as_ref().and_then(|v| unprotect_string(v).ok())
+        }
+        _ => None,
+    };
+    
+    let private_key_path = match &s.auth {
+        config::Auth::Key { private_key_path, .. } => Some(private_key_path.clone()),
+        _ => None,
+    };
+
+    // Check if running on Windows
+    #[cfg(target_os = "windows")]
+    let is_windows = true;
+    #[cfg(not(target_os = "windows"))]
+    let is_windows = false;
+
+    // For password auth on Windows, we need to use a different approach
+    // Windows SSH doesn't support inline passwords like sshpass
+    // So we require key-based auth on Windows
+    if password.is_some() && is_windows {
+        return Err("Password authentication for monitoring requires SSH keys on Windows. Please configure your session to use key authentication, or run this app on Linux/macOS.".to_string());
+    }
+
+    // Build SSH command for silent execution (no PTY allocation)
+    let mut ssh_cmd: Command;
+    
+    // Use sshpass for password authentication (Unix/Linux only), otherwise use ssh directly
+    if let Some(ref pwd) = password {
+        if is_windows {
+            // This should not happen due to check above, but for safety
+            return Err("Password auth not supported on Windows for monitoring".to_string());
+        }
+        ssh_cmd = Command::new("sshpass");
+        ssh_cmd.arg("-p").arg(pwd);
+        ssh_cmd.arg("ssh");
+    } else {
+        ssh_cmd = Command::new("ssh");
+    }
+    
+    ssh_cmd.arg("-p").arg(port.to_string());
+    ssh_cmd.arg("-T"); // Disable pseudo-terminal allocation
+    ssh_cmd.arg("-o").arg("StrictHostKeyChecking=no");
+    ssh_cmd.arg("-o").arg("ConnectTimeout=5");
+    ssh_cmd.arg("-o").arg("LogLevel=ERROR"); // Reduce verbosity but still show errors
+    
+    #[cfg(target_os = "windows")]
+    {
+        // Windows SSH uses a different path for known hosts
+        let known_hosts = std::env::var("USERPROFILE")
+            .map(|p| format!("{}\\AppData\\Roaming\\ssh\\known_hosts", p))
+            .unwrap_or_else(|_| "~/.ssh/known_hosts".to_string());
+        ssh_cmd.arg("-o").arg(format!("UserKnownHostsFile={}", known_hosts));
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        ssh_cmd.arg("-o").arg("UserKnownHostsFile=/dev/null"); // Ignore host key for monitoring
+    }
+    
+    // Use key authentication if available
+    if let Some(ref key_path) = private_key_path {
+        ssh_cmd.arg("-i").arg(key_path);
+        ssh_cmd.arg("-o").arg("IdentitiesOnly=yes");
+    }
+    
+    ssh_cmd.arg(format!("{}@{}", username, host));
+    ssh_cmd.arg(command);
+    
+    // Capture stdout and stderr
+    ssh_cmd.stdout(std::process::Stdio::piped());
+    ssh_cmd.stderr(std::process::Stdio::piped());
+
+    let output = ssh_cmd.output().map_err(|e| {
+        if is_windows {
+            "Failed to execute SSH command. Please ensure OpenSSH is installed and your session uses key authentication.".to_string()
+        } else {
+            format!("Failed to execute SSH: {}. Make sure sshpass is installed for password authentication.", e)
+        }
+    })?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    // Log errors for debugging (only in debug builds)
+    if debug_enabled() && !stderr.is_empty() {
+        eprintln!("[zssh] monitor_exec stderr: {}", stderr);
+    }
+    
+    // Return stdout, or stderr if stdout is empty
+    let result = if stdout.is_empty() { stderr } else { stdout };
+    
+    Ok(result)
+}
+
 #[tauri::command]
 fn pty_resize_cmd(state: State<'_, AppState>, pty_id: Uuid, cols: u16, rows: u16) -> Result<(), String> {
     if debug_enabled() {
@@ -880,9 +991,79 @@ fn sftp_get_cmd(state: State<'_, AppState>, pty_id: Uuid, remote: String, local:
 }
 
 #[tauri::command]
+fn sftp_get_partial_cmd(state: State<'_, AppState>, pty_id: Uuid, remote: String, local: String) -> Result<u64, String> {
+    let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?;
+    sftp_get_partial(&pty, &remote, &local).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn sftp_put_cmd(state: State<'_, AppState>, pty_id: Uuid, local: String, remote: String) -> Result<(), String> {
     let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?;
     sftp_put(&pty, &local, &remote).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sftp_put_partial_cmd(state: State<'_, AppState>, pty_id: Uuid, local: String, remote: String) -> Result<u64, String> {
+    let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?
+;
+    sftp_put_partial(&pty, &local, &remote).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sftp_local_file_info_cmd(path: String) -> LocalFileInfo {
+    sftp_local_file_info_fn(&path)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnoseInfo {
+    pub app_version: String,
+    pub os: String,
+    pub arch: String,
+    pub tauri_version: String,
+    pub rust_version: String,
+    pub config_summary: DiagnoseConfigSummary,
+    pub collected_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnoseConfigSummary {
+    pub theme: String,
+    pub language: String,
+    pub session_count: usize,
+    pub group_count: usize,
+    pub has_passwords_saved: bool,
+}
+
+#[tauri::command]
+fn diagnose_export_cmd(state: State<'_, AppState>) -> Result<DiagnoseInfo, String> {
+    let cfg = state.config.read().map_err(|e| e.to_string())?;
+    Ok(DiagnoseInfo {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        tauri_version: option_env!("TAURI_ENV_VERSION").unwrap_or("unknown").to_string(),
+        rust_version: option_env!("RUSTC_VERSION").unwrap_or("unknown").to_string(),
+        config_summary: DiagnoseConfigSummary {
+            theme: cfg.settings.theme.clone(),
+            language: (&cfg.settings as &dyn std::any::Any)
+                .downcast_ref::<serde_json::Value>()
+                .and_then(|v| v.get("language").and_then(|l| l.as_str()).map(String::from))
+                .unwrap_or_else(|| "zh-CN".to_string()),
+            session_count: cfg.sessions.len(),
+            group_count: cfg.groups.len(),
+            has_passwords_saved: cfg.sessions.iter().any(|s| matches!(s.auth, Auth::Password { password_dpapi: Some(..) })),
+        },
+        collected_at: chrono_lite()?,
+    })
+}
+
+fn chrono_lite() -> Result<String, String> {
+    // Simple timestamp without depending on chrono crate
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?;
+    Ok(format!("{}", duration.as_secs()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -902,6 +1083,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Initialize logging system (reads ZSSH_LOG env var)
+            crate::log::init();
+            crate::info!("app_start version={}", env!("CARGO_PKG_VERSION"));
+
             let cfg = load_config(app.handle()).map_err(|e| anyhow!(e))?;
             app.manage(AppState::new(cfg));
 
@@ -928,6 +1113,7 @@ pub fn run() {
             pty_start_sftp,
             pty_start_sftp_inline,
             pty_send,
+            monitor_exec,
             pty_resize_cmd,
             pty_kill_cmd,
             pty_respond_hostkey,
@@ -941,7 +1127,13 @@ pub fn run() {
             sftp_rm_cmd,
             sftp_rename_cmd,
             sftp_get_cmd,
-            sftp_put_cmd
+            sftp_get_partial_cmd,
+            sftp_put_cmd,
+            sftp_put_partial_cmd,
+            sftp_local_file_info_cmd,
+            diagnose_export_cmd,
+            crate::log::log_get_level_cmd,
+            crate::log::log_set_level_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

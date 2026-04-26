@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "xterm/css/xterm.css";
 import type { PtyExitEvent, PtyOutputEvent, Settings, UUID } from "../types";
 import { api } from "../api";
 import { dbg, safeStr } from "../lib/debug";
 import { useAppStore } from "../store/appStore";
 import { tf } from "../lib/i18n";
+import { addCommand } from "../lib/commandHistory";
+import { getCompletions, applyCompletion } from "../lib/autoComplete";
+import type { CompletionItem } from "../lib/autoComplete";
+import { AutoCompletePopup } from "./AutoCompletePopup";
 
 function normalizePosixPath(p: string) {
   const s = p.replace(/\\/g, "/");
@@ -56,15 +61,67 @@ export function TerminalView(props: {
   onSize?: (cols: number, rows: number) => void;
   visible?: boolean;
   onTerminal?: (term: Terminal | null) => void;
+  onSearchAddon?: (addon: SearchAddon | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
   const ptyIdRef = useRef<UUID | null>(props.ptyId);
   const onSizeRef = useRef<((cols: number, rows: number) => void) | undefined>(props.onSize);
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const inputBufRef = useRef<string>("");
   const visibleRef = useRef<boolean>(props.visible ?? true);
+  const [acVisible, setAcVisible] = useState(false);
+  const [acItems, setAcItems] = useState<CompletionItem[]>([]);
+  const [acSelectedIndex, setAcSelectedIndex] = useState(0);
+  const acContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-complete: handle Tab key
+  const handleAutoComplete = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+
+    // Get current line content (approximation using buffer)
+    const line = term.buffer.active.getLine(term.buffer.active.cursorY)?.translateToString(true).trimEnd() ?? "";
+    const cursorX = term.buffer.active.cursorX;
+
+    if (!line) {
+      setAcVisible(false);
+      return;
+    }
+
+    const prefix = line.slice(0, Math.min(cursorX, line.length));
+    const candidates = getCompletions(prefix);
+
+    if (candidates.length === 0) {
+      setAcVisible(false);
+      return;
+    }
+
+    // Single match - auto-insert
+    if (candidates.length === 1) {
+      const result = applyCompletion(line, cursorX, candidates[0]);
+      // Write backspace to clear current input then type completion
+      term.write("\x7b".repeat(cursorX)); // not reliable, just let shell handle Tab
+      setAcVisible(false);
+      return;
+    }
+
+    // Multiple matches - show popup
+    setAcItems(candidates);
+    setAcSelectedIndex(0);
+    setAcVisible(true);
+  }, []);
+
+  const handleAcSelect = useCallback((item: CompletionItem) => {
+    setAcVisible(false);
+    // Let shell handle Tab natively for now; in production we'd inject text
+  }, []);
+
+  const handleAcClose = useCallback(() => {
+    setAcVisible(false);
+  }, []);
 
   const options = useMemo(
     () => ({
@@ -123,7 +180,9 @@ export function TerminalView(props: {
     dbg("info", "xterm:create", { ptyId: ptyIdRef.current, options });
     const term = new Terminal(options);
     const fit = new FitAddon();
+    const search = new SearchAddon();
     term.loadAddon(fit);
+    term.loadAddon(search);
     term.open(el);
     let raf: number | null = null;
     raf = requestAnimationFrame(() => {
@@ -139,7 +198,9 @@ export function TerminalView(props: {
 
     termRef.current = term;
     fitRef.current = fit;
+    searchRef.current = search;
     props.onTerminal?.(term);
+    props.onSearchAddon?.(search);
 
     const d = term.onData((data) => {
       if (termRef.current !== term) return;
@@ -152,6 +213,11 @@ export function TerminalView(props: {
         const split = inputBufRef.current.split(/\r\n|\n|\r/);
         inputBufRef.current = split.pop() ?? "";
         for (const line of split) {
+          // Record command to history
+          if (line.trim()) {
+            try { addCommand(String(ptyId), line.trim()); } catch {}
+          }
+
           const target = parseCdTarget(line);
           if (!target) continue;
           const curr = tab.sshCwdHint ?? "";
@@ -199,7 +265,9 @@ export function TerminalView(props: {
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      searchRef.current = null;
       props.onTerminal?.(null);
+      props.onSearchAddon?.(null);
     };
   }, [options]);
 
@@ -247,5 +315,30 @@ export function TerminalView(props: {
     };
   }, []);
 
-  return <div ref={containerRef} className="w-full h-full bg-[var(--color-gray-950)]" />;
+  return (
+    <div ref={acContainerRef} className="relative w-full h-full bg-[var(--color-gray-950)]">
+      <div ref={containerRef} className="w-full h-full bg-[var(--color-gray-950)]"
+        onKeyDown={(e) => {
+          if (e.key === "Tab" && acVisible) {
+            e.preventDefault();
+            handleAcSelect(acItems[acSelectedIndex]);
+            return;
+          }
+          if (e.key === "Tab") {
+            // Let shell's native tab completion work
+            return;
+          }
+        }}
+      />
+      <AutoCompletePopup
+        items={acItems}
+        selectedIndex={acSelectedIndex}
+        visible={acVisible}
+        onSelect={handleAcSelect}
+        onHighlight={(i) => setAcSelectedIndex(i)}
+        onClose={handleAcClose}
+        lang={props.settings.language}
+      />
+    </div>
+  );
 }

@@ -6,4 +6,6 @@ export const DEFAULT_SHORTCUTS = {
   commandPalette: "Ctrl+Shift+P",
   newTab: "Ctrl+N",
   copy: "Ctrl+Shift+C",
+  terminalSearch: "Ctrl+F",
+  commandHistory: "Ctrl+R",
 } as const;

@@ -56,7 +56,7 @@ export function useShortcuts(shortcuts: Record<string, string> | undefined, hand
       const tag = el?.tagName?.toLowerCase?.() ?? "";
       const inEditable = !inXterm && (tag === "input" || tag === "textarea" || tag === "select" || !!(el as any)?.isContentEditable);
 
-      const allowInXterm = inXterm ? new Set(["commandPalette", "nextTab", "prevTab", "copy"]) : null;
+      const allowInXterm = inXterm ? new Set(["commandPalette", "nextTab", "prevTab", "copy", "terminalSearch", "commandHistory"]) : null;
       const allowInEditable = inEditable ? new Set(["commandPalette", "nextTab", "prevTab", "closeTab", "copy"]) : null;
       const currentHandlers = handlersRef.current;
       for (const [action, s] of entries) {
