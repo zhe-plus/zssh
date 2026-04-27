@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import { useMemo } from "react";
 import { AlertTriangle, CheckCircle, X } from "lucide-react";
 import { type PasteCheckResult } from "../lib/pasteProtection";
 import { t } from "../lib/i18n";

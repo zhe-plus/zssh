@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { vi } from "vitest";
 
 // Mock window.__TAURI_INTERNALS__ for non-Tauri test environment
 Object.defineProperty(globalThis, "__TAURI_INTERNALS__", { value: undefined, writable: true });

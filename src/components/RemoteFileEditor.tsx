@@ -37,7 +37,7 @@ export function RemoteFileEditor({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modified, setModified] = useState(false);
-  const [lineNumbers, setLineNumbers] = useState(true);
+  const [lineNumbers] = useState(true);
 
   // Load file content when dialog opens
   useEffect(() => {
@@ -52,7 +52,7 @@ export function RemoteFileEditor({
         // Download to a temp location - read as text
         // For SFTP-based editing, we use cat command to read content
         // This is a workaround since sftp get downloads binary
-        const result = await api.ptySend(ptyId!, `cat "${remotePath}"\n`);
+        await api.ptySend(ptyId!, `cat "${remotePath}"\n`);
         // The content will come back through pty-output event
         // For simplicity, show a message about loading from terminal
         setContent(`// ${t(lang_, "remoteEditLoadingHint")}\n// ${tf(lang_, "remoteEditPath", { path: remotePath })}\n`);
@@ -73,7 +73,6 @@ export function RemoteFileEditor({
     setError(null);
     try {
       // Use a heredoc to write content back to the remote file
-      const escaped = content.replace(/'/g, "'\\''");
       await api.ptySend(ptyId, `cat > '${remotePath}' << 'ZSSHEOF'\n${content}\nZSSHEOF\n`);
       setOriginalContent(content);
       setModified(false);

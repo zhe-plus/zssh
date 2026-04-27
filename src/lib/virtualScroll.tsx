@@ -70,13 +70,6 @@ export function useVirtualScroll(options: UseVirtualScrollOptions): UseVirtualSc
   const [version, setVersion] = useState(0); // Force recalculation
   const spacerRef = useRef<HTMLDivElement>(null);
 
-  // Use provided container ref or fall back to spacer's parent
-  const _getScrollTop = useCallback(() => {
-    if (scrollContainerRef?.current) return scrollContainerRef.current.scrollTop;
-    if (spacerRef.current?.parentElement) return spacerRef.current.parentElement.scrollTop;
-    return 0;
-  }, [scrollContainerRef]);
-
   const scrollToFn = useCallback((top: number, behavior?: ScrollBehavior) => {
     if (scrollContainerRef?.current) {
       scrollContainerRef.current.scrollTo({ top, behavior });

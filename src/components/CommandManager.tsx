@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { 
   Search, Plus, Trash2, Star, RotateCcw, Edit2, X, Check, 
-  ChevronDown, Terminal, Bookmark, History, MoreVertical 
+  ChevronDown, Terminal, Bookmark, History
 } from "lucide-react";
 import { t } from "../lib/i18n";
 import type { Lang } from "../lib/i18n";
@@ -19,7 +19,6 @@ import {
   addHistoryToCustom,
   clearCustomCommands,
   clearHistory,
-  SYSTEM_COMMANDS,
 } from "../lib/commandHistory";
 
 export interface CommandManagerProps {

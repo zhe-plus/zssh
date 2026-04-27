@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CommonCommand, Settings } from "../types";
+import type { Settings } from "../types";
 import { Modal } from "./Modal";
 import { Check, FileJson, Globe, Keyboard, Layout, Palette, Terminal, Search } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -21,6 +21,7 @@ import {
   searchHistory,
   clearHistory,
   type CommandItem,
+  type CommandEntry,
 } from "../lib/commandHistory";
 
 export function SettingsModal(props: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => Promise<void> }) {
@@ -32,7 +33,7 @@ export function SettingsModal(props: { open: boolean; onClose: () => void; setti
   // 命令管理相关状态
   const [cmdTab, setCmdTab] = useState<"system" | "custom" | "history">("system");
   const [customCmds, setCustomCmds] = useState<CommandItem[]>([]);
-  const [historyList, setHistoryList] = useState<CommandItem[]>([]);
+  const [historyList, setHistoryList] = useState<CommandEntry[]>([]);
   const [disabledSys, setDisabledSys] = useState<Set<string>>(new Set());
   const [cmdSearch, setCmdSearch] = useState("");
 
@@ -636,11 +637,9 @@ export function SettingsModal(props: { open: boolean; onClose: () => void; setti
                       className={["border-b border-[var(--color-gray-800)] last:border-b-0 px-3 py-2 hover:bg-[var(--color-gray-800)]", isCompact ? "py-1.5" : ""].join(" ")}
                     >
                       <div className={["text-[var(--color-gray-200)] font-mono truncate", isCompact ? "text-xs" : "text-sm"].join(" ")}>{cmd.command}</div>
-                      {cmd.lastUsedAt && (
-                        <div className={["text-[var(--color-gray-500)]", isCompact ? "text-[10px]" : "text-xs"].join(" ")}>
-                          {new Date(cmd.lastUsedAt).toLocaleString()}
-                        </div>
-                      )}
+                      <div className={["text-[var(--color-gray-500)]", isCompact ? "text-[10px]" : "text-xs"].join(" ")}>
+                        {new Date(cmd.timestamp).toLocaleString()}
+                      </div>
                     </div>
                   ))
                 )}

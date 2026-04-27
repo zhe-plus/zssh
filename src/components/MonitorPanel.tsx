@@ -66,7 +66,7 @@ interface MonitorState {
 
 const MAX_HISTORY = 60;
 
-export function MonitorPanel({ ptyId, sessionId, open, onClose, lang }: MonitorPanelProps) {
+export function MonitorPanel({ sessionId, open, onClose, lang }: MonitorPanelProps) {
   const lang_ = lang ?? "zh-CN";
   const [state, setState] = useState<MonitorState>({
     cpu: null,
@@ -119,7 +119,7 @@ export function MonitorPanel({ ptyId, sessionId, open, onClose, lang }: MonitorP
   const parseMemoryOutput = useCallback((output: string): MemoryData | null => {
     try {
       const lines = output.split("\n");
-      let memTotal = 0, memFree = 0, memAvailable = 0;
+      let memTotal = 0, memAvailable = 0;
       for (const line of lines) {
         const m = line.match(/Mem:\s+(\d+)k\s+total,\s+(\d+)k\s+used,\s+(\d+)k\s+free.*?(\d+)k\s+avail/);
         if (m) {

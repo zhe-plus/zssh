@@ -29,7 +29,6 @@ const STORAGE_KEY_CUSTOM = "zssh:custom_commands";
 const STORAGE_KEY_SYSTEM_DISABLED = "zssh:system_commands_disabled";
 
 const MAX_HISTORY_TOTAL = 2000;
-const MAX_HISTORY_PER_SESSION = 500;
 
 // ========== 系统命令定义 ==========
 export interface SystemCommand {
@@ -377,7 +376,7 @@ export function getCommandList(options: CommandListOptions): CommandItem[] {
 }
 
 // ========== 从历史记录添加到自定义命令 ==========
-export function addHistoryToCustom(historyId: string, command: string): CommandItem | null {
+export function addHistoryToCustom(_historyId: string, command: string): CommandItem | null {
   // 检查是否已存在
   const customCmds = loadCustomCommands();
   if (customCmds.some(c => c.command === command)) {

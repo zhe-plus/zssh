@@ -145,18 +145,103 @@ pub fn sftp_get_partial(session: &PtySession, remote: &str, local: &str) -> Resu
 }
 
 pub fn sftp_put(session: &PtySession, local: &str, remote: &str) -> Result<()> {
-    let _ = sftp_exec(session, &format!("put {local} {remote}"), Duration::from_secs(600))?;
+    let out = sftp_exec(session, &format!("put \"{local}\" \"{remote}\""), Duration::from_secs(600))?;
+    
+    // 调试输出
+    if debug_enabled() {
+        eprintln!("[zssh] sftp_put output: local={}, remote={}", local, remote);
+        eprintln!("[zssh] sftp_put output: {:?}", out);
+    }
+    
+    // 忽略无害的提示信息
+    let harmless_patterns = ["uploading to", "转移到", "fetching", "100%", "kbps", "mbps", "stat remote"];
+    
+    // 更精确的错误检测：只在非无害行中查找错误
+    for line in out.lines() {
+        let line_lower = line.to_ascii_lowercase();
+        
+        // 跳过空行和提示行
+        if line_lower.trim().is_empty() ||
+           line_lower.contains("sftp>") ||
+           line_lower.starts_with("put ") ||
+           harmless_patterns.iter().any(|h| line_lower.contains(h)) {
+            continue;
+        }
+        
+        // 检查真正的错误关键词
+        let error_keywords = [
+            "permission denied",
+            "failure",
+            "couldn't open",
+            "not a regular file",
+            "remote read",
+        ];
+        
+        for keyword in &error_keywords {
+            if line_lower.contains(keyword) {
+                return Err(anyhow!("SFTP put failed: {}", line.trim()));
+            }
+        }
+        
+        // 对 "no such file" 特殊处理：只在确认是错误时才失败
+        if line_lower.contains("no such file") && !line_lower.contains("stat remote") {
+            return Err(anyhow!("SFTP put failed: {}", line.trim()));
+        }
+    }
+    
     Ok(())
 }
 
 pub fn sftp_put_partial(session: &PtySession, local: &str, remote: &str) -> Result<u64> {
     let offset = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
     let cmd = if offset > 0 {
-        format!("put -a {local} {remote}")
+        format!("put -a \"{local}\" \"{remote}\"")
     } else {
-        format!("put {local} {remote}")
+        format!("put \"{local}\" \"{remote}\"")
     };
-    let _ = sftp_exec(session, &cmd, Duration::from_secs(600))?;
+    let out = sftp_exec(session, &cmd, Duration::from_secs(600))?;
+    
+    // 调试输出
+    if debug_enabled() {
+        eprintln!("[zssh] sftp_put_partial output: {:?}", out);
+    }
+    
+    // 忽略无害的提示信息
+    let harmless_patterns = ["uploading to", "转移到", "fetching", "100%", "kbps", "mbps", "stat remote"];
+    
+    // 检查真正的错误
+    for line in out.lines() {
+        let line_lower = line.to_ascii_lowercase();
+        
+        // 跳过空行和提示行
+        if line_lower.trim().is_empty() ||
+           line_lower.contains("sftp>") ||
+           line_lower.starts_with("put ") ||
+           harmless_patterns.iter().any(|h| line_lower.contains(h)) {
+            continue;
+        }
+        
+        // 检查真正的错误关键词
+        let error_keywords = [
+            "permission denied",
+            "failure",
+            "couldn't open",
+            "not a regular file",
+            "remote read",
+        ];
+        
+        for keyword in &error_keywords {
+            if line_lower.contains(keyword) {
+                return Err(anyhow!("SFTP put partial failed: {}", line.trim()));
+            }
+        }
+        
+        // 对 "no such file" 特殊处理
+        if line_lower.contains("no such file") && !line_lower.contains("stat remote") {
+            return Err(anyhow!("SFTP put partial failed: {}", line.trim()));
+        }
+    }
+    
     Ok(offset)
 }
 

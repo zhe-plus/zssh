@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Search, Trash2 } from "lucide-react";
 import { searchHistory, clearHistory, type CommandEntry } from "../lib/commandHistory";
 import { t } from "../lib/i18n";

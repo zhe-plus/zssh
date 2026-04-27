@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { dbg, dbgEnabled, safeStr } from "../lib/debug";
+import { dbg, safeStr } from "../lib/debug";
 
 describe("debug", () => {
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;

@@ -56,7 +56,7 @@ describe("pasteProtection", () => {
     it("should detect dd writing to device as dangerous", () => {
       // Pattern: /\bdd\s+if=.*of=\/dev\/[sh]d\b/
       // The regex is quite strict; test with exact format
-      const result = checkPaste("dd if=/dev/zero of=/dev/sda ");
+      checkPaste("dd if=/dev/zero of=/dev/sda ");
       // If pattern doesn't match due to strictness, that's OK - the pattern exists
       // Just verify other dangerous patterns work
       const result2 = checkPaste("> /dev/sda");

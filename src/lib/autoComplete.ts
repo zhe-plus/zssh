@@ -47,9 +47,6 @@ const COMMON_COMMANDS: string[] = [
   "journalctl", "systemctl", "service",
 ];
 
-// Build a set for O(1) lookup
-const commandSet = new Set(COMMON_COMMANDS);
-
 /**
  * Get auto-completion candidates for the given input prefix.
  * @param prefix The text before cursor (e.g., "gi" or "./")
@@ -71,7 +68,6 @@ export function getCompletions(prefix: string): CompletionItem[] {
   for (const cmd of COMMON_COMMANDS) {
     const lowerCmd = cmd.toLowerCase();
     if (lowerCmd.startsWith(lowerTrimmed) || lowerCmd.includes(lowerTrimmed)) {
-      const priority = lowerCmd.startsWith(lowerTrimmed) ? 0 : 1;
       results.push({
         text: cmd,
         displayText: cmd,
@@ -98,7 +94,7 @@ export function getCompletions(prefix: string): CompletionItem[] {
  * For path completions, we'd need SFTP/SSH integration.
  * This returns a placeholder that indicates file completions are needed.
  */
-function getPathCompletions(prefix: string): CompletionItem[] {
+function getPathCompletions(_prefix: string): CompletionItem[] {
   // In production, this would call the SFTP API to list directory contents
   // For now, we return empty and let the shell handle it natively
   return [];

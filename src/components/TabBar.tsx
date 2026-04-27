@@ -4,7 +4,7 @@ import { SortableContext, useSortable, horizontalListSortingStrategy, arrayMove 
 import type { Tab } from "../store/appStore";
 import { useEffect, useState, type CSSProperties } from "react";
 import type { UUID } from "../types";
-import { Plus, X, Copy } from "lucide-react";
+import { Plus, X, Copy, PlugZap } from "lucide-react";
 import { isCompactLayout } from "../lib/layout";
 import { WindowControls } from "./WindowControls";
 
@@ -154,7 +154,7 @@ export function TabBar(props: {
           ].join(" ")}
           title={props.newSessionTitle ?? "Quick Connect"}
         >
-          <Plus className={isCompact ? "size-3.5" : "size-4"} />
+          <PlugZap className={isCompact ? "size-3.5" : "size-4"} />
         </button>
       </DndContext>
       </div>

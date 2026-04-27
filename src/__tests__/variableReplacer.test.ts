@@ -81,9 +81,16 @@ describe("variableReplacer", () => {
         username: "deploy",
         protocol: "ssh",
         authType: "password",
-        group_id: null,
+        hasPassword: false,
+        hasKeyPassphrase: false,
+        privateKeyPath: null,
+        appearance: { theme: null, fontFamily: null, fontSize: null, lineHeight: null, encoding: "UTF-8" },
+        connection: { connectTimeoutSeconds: null, keepAliveIntervalSeconds: null },
+        groupId: null,
         favorite: false,
-        sort_index: 0,
+        sortIndex: 0,
+        createdAt: 0,
+        updatedAt: 0,
       };
 
       const ctx = getSessionContext(session);
@@ -102,9 +109,16 @@ describe("variableReplacer", () => {
         username: "root",
         protocol: "ssh",
         authType: "password",
-        group_id: null,
+        hasPassword: false,
+        hasKeyPassphrase: false,
+        privateKeyPath: null,
+        appearance: { theme: null, fontFamily: null, fontSize: null, lineHeight: null, encoding: "UTF-8" },
+        connection: { connectTimeoutSeconds: null, keepAliveIntervalSeconds: null },
+        groupId: null,
         favorite: false,
-        sort_index: 0,
+        sortIndex: 0,
+        createdAt: 0,
+        updatedAt: 0,
       };
 
       const ctx = getSessionContext(session);

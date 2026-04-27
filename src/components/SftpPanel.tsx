@@ -4,7 +4,7 @@ import { api } from "../api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t, tf } from "../lib/i18n";
-import { RefreshCw, ChevronUp, FolderPlus, Upload, Columns2, Rows2, X, Search, File, Folder, Eye, EyeOff, RefreshCw as SyncIcon } from "lucide-react";
+import { RefreshCw, ChevronUp, ChevronLeft, ChevronRight, FolderPlus, Upload, Columns2, Rows2, X, Search, File, Folder, Eye, EyeOff, ArrowLeftRight } from "lucide-react";
 import { TransferProgress } from "./TransferProgress";
 import { FolderSyncDialog } from "./FolderSyncDialog";
 import { RemoteFileEditor } from "./RemoteFileEditor";
@@ -42,6 +42,11 @@ export function SftpPanel(props: {
     progress: number;
   } | null>(null);
   const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [showSearchBar, setShowSearchBar] = useState(false);
+  const [dirHistory, setDirHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const canGoBack = historyIndex >= 0;
+  const canGoForward = historyIndex < dirHistory.length - 1;
   const [editingFile, setEditingFile] = useState<{ name: string; path: string } | null>(null);
   const [menu, setMenu] = useState<{
     open: boolean;
@@ -115,7 +120,8 @@ export function SftpPanel(props: {
     };
   }, [menu.open]);
 
-  const uploadPaths = useCallback(
+  // 上传文件（支持恢复检查）
+  const uploadWithResumeCheck = useCallback(
     async (paths: string[]) => {
       if (!props.ptyId) return;
       if (!paths.length) return;
@@ -123,11 +129,13 @@ export function SftpPanel(props: {
       setError(null);
       try {
         for (const p of paths) {
-          const name = basename(p);
+          // 规范化 Windows 路径：转换为正斜杠
+          const normalizedPath = p.replace(/\\/g, "/");
+          const name = basename(normalizedPath);
           const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
           const remote = base ? `${base}/${name}` : name;
 
-          // Check for resume
+          // Check for resume (仅在用户直接选择文件时进行)
           const info = await api.sftpLocalFileInfo(p).catch(() => null);
           const shouldResume = info?.exists && info!.size > 0;
           let useResume = false;
@@ -148,9 +156,9 @@ export function SftpPanel(props: {
               await api.sftpPut(props.ptyId!, p, remote);
             }
             setTransfer({ fileName: name, status: "complete", progress: 100 });
-          } catch {
+          } catch (e) {
             setTransfer({ fileName: name, status: "failed", progress: 0 });
-            throw new Error(`Upload failed: ${name}`);
+            throw new Error(`Upload failed: ${name} - ${e}`);
           }
         }
         await refresh();
@@ -164,6 +172,44 @@ export function SftpPanel(props: {
     [props.ptyId, cwd, refresh, lang],
   );
 
+  // 拖拽上传（跳过恢复检查，因为不是用户直接选择文件）
+  const uploadDragDrop = useCallback(
+    async (paths: string[]) => {
+      if (!props.ptyId) return;
+      if (!paths.length) return;
+      setBusy(true);
+      setError(null);
+      try {
+        for (const p of paths) {
+          // 规范化 Windows 路径：转换为正斜杠
+          const normalizedPath = p.replace(/\\/g, "/");
+          const name = basename(normalizedPath);
+          const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
+          const remote = base ? `${base}/${name}` : name;
+
+          // Show transfer progress
+          setTransfer({ fileName: name, status: "transferring", progress: 0 });
+
+          try {
+            // 拖拽上传不使用恢复，直接上传
+            await api.sftpPut(props.ptyId!, p, remote);
+            setTransfer({ fileName: name, status: "complete", progress: 100 });
+          } catch (e) {
+            setTransfer({ fileName: name, status: "failed", progress: 0 });
+            throw new Error(`Upload failed: ${name} - ${e}`);
+          }
+        }
+        await refresh();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(false);
+        setTimeout(() => setTransfer(null), 3000);
+      }
+    },
+    [props.ptyId, cwd, refresh],
+  );
+
   useEffect(() => {
     let un: (() => void) | null = null;
     getCurrentWindow()
@@ -171,14 +217,14 @@ export function SftpPanel(props: {
         if (!props.ptyId) return;
         if (e.payload.type !== "drop") return;
         const paths = e.payload.paths ?? [];
-        uploadPaths(paths).catch(() => undefined);
+        uploadDragDrop(paths).catch(() => undefined);
       })
       .then((fn) => {
         un = fn;
       })
       .catch(() => undefined);
     return () => un?.();
-  }, [props.ptyId, uploadPaths]);
+  }, [props.ptyId, uploadDragDrop]);
 
   const dirsFirst = useMemo(() => {
     const copy = [...entries];
@@ -207,8 +253,15 @@ export function SftpPanel(props: {
     return list;
   }, [dirsFirst, filterType, showHidden, filterKeyword]);
 
-  async function cd(name: string) {
+  async function cd(name: string, addToHistory = true) {
     if (!props.ptyId) return;
+    // 记录当前目录到历史
+    if (addToHistory && cwd) {
+      const newHistory = dirHistory.slice(0, historyIndex + 1);
+      newHistory.push(cwd);
+      setDirHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+    }
     setBusy(true);
     setError(null);
     try {
@@ -216,6 +269,39 @@ export function SftpPanel(props: {
       await refresh();
     } catch {
       // 静默失败，不提示
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function goBack() {
+    if (historyIndex < 0 || !props.ptyId) return;
+    const targetDir = dirHistory[historyIndex];
+    setBusy(true);
+    setError(null);
+    try {
+      await api.sftpCd(props.ptyId, targetDir);
+      await refresh();
+      setHistoryIndex(historyIndex - 1);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function goForward() {
+    if (historyIndex >= dirHistory.length - 1 || !props.ptyId) return;
+    const newIndex = historyIndex + 1;
+    const targetDir = dirHistory[newIndex];
+    setBusy(true);
+    setError(null);
+    try {
+      await api.sftpCd(props.ptyId, targetDir);
+      await refresh();
+      setHistoryIndex(newIndex);
+    } catch (e) {
+      setError(String(e));
     } finally {
       setBusy(false);
     }
@@ -294,7 +380,7 @@ export function SftpPanel(props: {
     }
     if (!paths) return;
     const list = Array.isArray(paths) ? paths : [paths];
-    await uploadPaths(list);
+    await uploadWithResumeCheck(list);
   }
 
   async function download(entry: RemoteEntry) {
@@ -307,7 +393,9 @@ export function SftpPanel(props: {
       return;
     }
     if (!dir || Array.isArray(dir)) return;
-    const local = `${dir.replace(/\\/g, "/")}/${basename(entry.name)}`;
+    // 规范化 Windows 路径
+    const normalizedDir = dir.replace(/\\/g, "/");
+    const local = `${normalizedDir}/${basename(entry.name)}`;
 
     // Check for resume
     const info = await api.sftpLocalFileInfo(local).catch(() => null);
@@ -394,16 +482,6 @@ export function SftpPanel(props: {
 
   return (
     <div className="h-full w-full flex flex-col bg-[var(--color-gray-950)]">
-      {/* Transfer Progress */}
-      {transfer ? (
-        <TransferProgress
-          fileName={transfer.fileName}
-          status={transfer.status}
-          progress={transfer.progress}
-          lang={lang}
-        />
-      ) : null}
-
       <div className="h-9 bg-[var(--color-gray-900)] border-b border-[var(--color-gray-800)] flex items-center gap-1 px-2">
         {props.onClose ? (
           <button
@@ -439,6 +517,22 @@ export function SftpPanel(props: {
           <RefreshCw className="size-4" />
         </button>
         <button
+          onClick={goBack}
+          disabled={busy || !props.ptyId || !canGoBack}
+          className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-30"
+          title={t(lang, "sftpGoBack") || "返回"}
+        >
+          <ChevronLeft className="size-4" />
+        </button>
+        <button
+          onClick={goForward}
+          disabled={busy || !props.ptyId || !canGoForward}
+          className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-30"
+          title={t(lang, "sftpGoForward") || "前进"}
+        >
+          <ChevronRight className="size-4" />
+        </button>
+        <button
           onClick={up}
           disabled={busy || !props.ptyId}
           className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-50"
@@ -455,6 +549,14 @@ export function SftpPanel(props: {
           <FolderPlus className="size-4" />
         </button>
         <button
+          onClick={() => setShowSearchBar(!showSearchBar)}
+          disabled={!props.ptyId}
+          className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-50"
+          title={t(lang, "sftpSearch") || "搜索"}
+        >
+          <Search className="size-4" />
+        </button>
+        <button
           onClick={upload}
           disabled={busy || !props.ptyId}
           className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-50"
@@ -468,7 +570,7 @@ export function SftpPanel(props: {
           className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-gray-400)] hover:bg-[var(--color-gray-800)] hover:text-white disabled:opacity-50"
           title={t(lang, "folderSyncTitle")}
         >
-          <SyncIcon className="size-4" />
+          <ArrowLeftRight className="size-4" />
         </button>
 
         <div className="flex-1 min-w-0 px-2" title={cwd}>
@@ -492,7 +594,8 @@ export function SftpPanel(props: {
 
       {error ? <div className="px-2 py-2 text-red-400 text-xs">{error}</div> : null}
 
-      {/* 过滤工具栏 */}
+      {/* 搜索工具栏 */}
+      {showSearchBar ? (
       <div className="flex items-center gap-1.5 px-2 py-1 border-b border-[var(--color-gray-800)] bg-[var(--color-gray-900)]">
         <div className="relative flex items-center">
           <Search className="absolute left-2 size-3 text-[var(--color-gray-500)]" />
@@ -548,6 +651,7 @@ export function SftpPanel(props: {
           {filteredEntries.length}/{dirsFirst.length}
         </span>
       </div>
+      ) : null}
 
       <div className="flex-1 overflow-auto" onContextMenu={(ev) => openContextMenu(ev, null)}>
         <table className="w-full border-collapse text-sm">
@@ -662,11 +766,24 @@ export function SftpPanel(props: {
             </button>
           ) : null}
           {menu.entry ? (
-            <button className="w-full text-left px-3 py-2 text-sm text-red-300 hover:bg-[var(--color-gray-800)]" onClick={() => menuRemove(menu.entry!).catch(() => undefined)}>
+            <button
+              className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-900/30 font-medium"
+              onClick={() => menuRemove(menu.entry!).catch(() => undefined)}
+            >
               {t(lang, "delete")}
             </button>
           ) : null}
         </div>
+      ) : null}
+
+      {/* Transfer Progress - 显示在底部 */}
+      {transfer ? (
+        <TransferProgress
+          fileName={transfer.fileName}
+          status={transfer.status}
+          progress={transfer.progress}
+          lang={lang}
+        />
       ) : null}
 
       <FolderSyncDialog

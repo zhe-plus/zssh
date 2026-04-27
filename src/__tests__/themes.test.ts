@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { themes, DEFAULT_THEME, applyTheme, type ThemeKey, type ThemeColors } from "../lib/themes";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { themes, DEFAULT_THEME, applyTheme, type ThemeKey } from "../lib/themes";
 
 describe("themes", () => {
   describe("theme definitions", () => {

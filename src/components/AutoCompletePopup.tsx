@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { CompletionItem } from "../lib/autoComplete";
-import { t } from "../lib/i18n";
 
 interface AutoCompletePopupProps {
   items: CompletionItem[];
@@ -19,9 +18,7 @@ export function AutoCompletePopup({
   onSelect,
   onHighlight,
   onClose,
-  lang,
 }: AutoCompletePopupProps) {
-  const lang_ = lang ?? "zh-CN";
   const listRef = useRef<HTMLUListElement>(null);
   const [scrolling, setScrolling] = useState(false);
 
@@ -38,7 +35,7 @@ export function AutoCompletePopup({
 
   if (!visible || items.length === 0) return null;
 
-  const handleItemClick = (item: CompletionItem, index: number) => {
+  const handleItemClick = (item: CompletionItem, _index: number) => {
     onSelect(item);
   };
 

@@ -37,7 +37,7 @@ export const PRESET_LAYOUTS: Omit<LayoutSnapshot, "id" | "createdAt">[] = [
 /**
  * Save current layout state as a named snapshot
  */
-export function saveLayout(name: string, snapshot: Omit<LayoutSnapshot, "id" | "createdAt">): LayoutSnapshot {
+export function saveLayout(name: string, snapshot: Omit<LayoutSnapshot, "id" | "name" | "createdAt">): LayoutSnapshot {
   const layouts = getStoredLayouts();
   const newLayout: LayoutSnapshot = {
     ...snapshot,

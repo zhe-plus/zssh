@@ -10,7 +10,6 @@ import { dbg, safeStr } from "../lib/debug";
 import { useAppStore } from "../store/appStore";
 import { tf } from "../lib/i18n";
 import { addCommand } from "../lib/commandHistory";
-import { getCompletions, applyCompletion } from "../lib/autoComplete";
 import type { CompletionItem } from "../lib/autoComplete";
 import { AutoCompletePopup } from "./AutoCompletePopup";
 
@@ -73,48 +72,11 @@ export function TerminalView(props: {
   const inputBufRef = useRef<string>("");
   const visibleRef = useRef<boolean>(props.visible ?? true);
   const [acVisible, setAcVisible] = useState(false);
-  const [acItems, setAcItems] = useState<CompletionItem[]>([]);
+  const [acItems] = useState<CompletionItem[]>([]);
   const [acSelectedIndex, setAcSelectedIndex] = useState(0);
   const acContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-complete: handle Tab key
-  const handleAutoComplete = useCallback(() => {
-    const term = termRef.current;
-    if (!term) return;
-
-    // Get current line content (approximation using buffer)
-    const line = term.buffer.active.getLine(term.buffer.active.cursorY)?.translateToString(true).trimEnd() ?? "";
-    const cursorX = term.buffer.active.cursorX;
-
-    if (!line) {
-      setAcVisible(false);
-      return;
-    }
-
-    const prefix = line.slice(0, Math.min(cursorX, line.length));
-    const candidates = getCompletions(prefix);
-
-    if (candidates.length === 0) {
-      setAcVisible(false);
-      return;
-    }
-
-    // Single match - auto-insert
-    if (candidates.length === 1) {
-      const result = applyCompletion(line, cursorX, candidates[0]);
-      // Write backspace to clear current input then type completion
-      term.write("\x7b".repeat(cursorX)); // not reliable, just let shell handle Tab
-      setAcVisible(false);
-      return;
-    }
-
-    // Multiple matches - show popup
-    setAcItems(candidates);
-    setAcSelectedIndex(0);
-    setAcVisible(true);
-  }, []);
-
-  const handleAcSelect = useCallback((item: CompletionItem) => {
+  const handleAcSelect = useCallback((_item: CompletionItem) => {
     setAcVisible(false);
     // Let shell handle Tab natively for now; in production we'd inject text
   }, []);
@@ -241,13 +203,13 @@ export function TerminalView(props: {
             });
           }
         }
+        
+        // 通知 App 刷新历史记录
+        window.dispatchEvent(new CustomEvent("zssh:command-sent", { 
+          detail: { sessionId: tab.sessionId } 
+        }));
       }
       api.ptySend(ptyId, data).catch(() => undefined);
-      
-      // 通知 App 刷新历史记录
-      window.dispatchEvent(new CustomEvent("zssh:command-sent", { 
-        detail: { sessionId: tab.sessionId } 
-      }));
     });
 
     const ro = new ResizeObserver(() => {

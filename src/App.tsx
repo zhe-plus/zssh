@@ -22,12 +22,12 @@ import { useAppStore } from "./store/appStore";
 import { useNotepadStore } from "./store/notepadStore";
 import type { AuthPromptEvent, HostKeyPromptEvent, SessionPublic, UUID } from "./types";
 import { api } from "./api";
-import { Folder, PlugZap, Activity, Notebook, Terminal } from "lucide-react";
+import { Folder, PlugZap, Activity } from "lucide-react";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { dbg } from "./lib/debug";
-import { DEFAULT_COMMON_COMMANDS, getDefaultCommonCommands } from "./lib/defaultCommonCommands";
-import { getCustomCommands, getCommandList, SYSTEM_COMMANDS, searchHistory, getSessionHistory } from "./lib/commandHistory";
+import { DEFAULT_COMMON_COMMANDS } from "./lib/defaultCommonCommands";
+import { getCustomCommands, SYSTEM_COMMANDS, getSessionHistory } from "./lib/commandHistory";
 import { t, tf } from "./lib/i18n";
 import { DEFAULT_SHORTCUTS } from "./lib/defaultShortcuts";
 import { applyTheme, DEFAULT_THEME } from "./lib/themes";
@@ -366,6 +366,14 @@ function App() {
     }
   }, [store]);
 
+  const handleSendToTerminal = useCallback((text: string) => {
+    const activeTab = store.tabs.find((t) => t.id === store.activeTabId);
+    if (activeTab?.ptyId) {
+      // 添加换行符并发送
+      api.ptySend(activeTab.ptyId, `${text}\n`).catch(() => undefined);
+    }
+  }, [store]);
+
   const nextTab = useCallback(() => {
     const { tabs, activeTabId } = store;
     if (tabs.length <= 1) return;
@@ -528,6 +536,35 @@ function App() {
                     >
                       <PlugZap className="size-3.5" />
                       {activeTab?.ptyId ? t(lang, "disconnect") : t(lang, "connect")}
+                    </button>
+
+                    <button
+                      disabled={!activeTab}
+                      onClick={async () => {
+                        if (!activeTab) return;
+                        dbg("info", "ui.sftp:click", { tabId: activeTab.id, sessionId: activeTab.sessionId, sftpOpen: !!activeTab.sftpPtyId, isTauri });
+                        if (!isTauri) {
+                          setConnectError(`${t(lang, "previewModeCannotConnect")}\n${t(lang, "useDesktopRun")}`);
+                          return;
+                        }
+                        try {
+                          if (activeTab.sftpPtyId) {
+                            await store.closeSftp(activeTab.id);
+                          } else {
+                            await store.openSftp(activeTab.id, lastTermSize.cols, lastTermSize.rows);
+                          }
+                        } catch (e: any) {
+                          dbg("error", "ui.sftp:failed", { tabId: activeTab.id, message: String(e?.message ?? e ?? t(lang, "openSftpFailed")) });
+                          setConnectError(String(e?.message ?? e ?? t(lang, "openSftpFailed")));
+                        }
+                      }}
+                      className={[
+                        "px-2 py-1 rounded text-xs flex items-center gap-1.5",
+                        activeTab?.sftpPtyId ? "bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]" : activeTab ? "bg-[var(--color-gray-800)] text-[var(--color-gray-400)] hover:bg-[var(--color-gray-700)]" : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
+                      ].join(" ")}
+                    >
+                      <Folder className="size-3.5" />
+                      SFTP
                     </button>
 
                     {/* 系统命令下拉框 */}
@@ -741,13 +778,19 @@ function App() {
                     disabled={!activeTab}
                     onClick={async () => {
                       if (!activeTab) return;
-                      dbg("info", "ui.sftp:click", { tabId: activeTab.id, sessionId: activeTab.sessionId, isTauri });
+                      dbg("info", "ui.sftp:click", { tabId: activeTab.id, sessionId: activeTab.sessionId, sftpOpen: !!activeTab.sftpPtyId, isTauri });
                       if (!isTauri) {
                         setConnectError(`${t(lang, "previewModeCannotConnect")}\n${t(lang, "useDesktopRun")}`);
                         return;
                       }
                       try {
-                        await store.openSftp(activeTab.id, lastTermSize.cols, lastTermSize.rows);
+                        if (activeTab.sftpPtyId) {
+                          // 已打开，点击关闭
+                          await store.closeSftp(activeTab.id);
+                        } else {
+                          // 未打开，点击打开
+                          await store.openSftp(activeTab.id, lastTermSize.cols, lastTermSize.rows);
+                        }
                       } catch (e: any) {
                         dbg("error", "ui.sftp:failed", { tabId: activeTab.id, message: String(e?.message ?? e ?? t(lang, "openSftpFailed")) });
                         setConnectError(String(e?.message ?? e ?? t(lang, "openSftpFailed")));
@@ -1131,6 +1174,7 @@ function App() {
         open={notepadOpen}
         onClose={() => setNotepadOpen(false)}
         lang={lang}
+        onSendToTerminal={handleSendToTerminal}
       />
 
     </div>

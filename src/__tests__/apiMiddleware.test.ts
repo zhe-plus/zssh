@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { withRetry, withTimeout, cachedApi, apiCache, clearApiCache, DEFAULT_RETRY, DEFAULT_CACHE, DEFAULT_TIMEOUT } from "../lib/apiMiddleware";
 
 describe("apiMiddleware", () => {
