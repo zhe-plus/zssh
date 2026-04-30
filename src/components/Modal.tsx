@@ -10,6 +10,7 @@ export function Modal(props: { title: string; open: boolean; onClose: () => void
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) props.onClose();
       }}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <div
         className={cn(

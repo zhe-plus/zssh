@@ -8,6 +8,9 @@ import { RefreshCw, ChevronUp, ChevronLeft, ChevronRight, FolderPlus, Upload, Co
 import { TransferProgress } from "./TransferProgress";
 import { FolderSyncDialog } from "./FolderSyncDialog";
 import { RemoteFileEditor } from "./RemoteFileEditor";
+import { FileOverwriteDialog, type FileOverwriteAction } from "./FileOverwriteDialog";
+import { SftpConfirmDialog } from "./SftpConfirmDialog";
+import { SftpRenameDialog } from "./SftpRenameDialog";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -36,11 +39,11 @@ export function SftpPanel(props: {
   const [filterKeyword, setFilterKeyword] = useState("");
   const [filterType, setFilterType] = useState<"all" | "dir" | "file">("all");
   const [showHidden, setShowHidden] = useState(true);
-  const [transfer, setTransfer] = useState<{
+  const [transferQueue, setTransferQueue] = useState<{
     fileName: string;
-    status: "transferring" | "complete" | "failed";
+    status: "waiting" | "transferring" | "complete" | "failed";
     progress: number;
-  } | null>(null);
+  }[]>([]);
   const [syncDialogOpen, setSyncDialogOpen] = useState(false);
   const [showSearchBar, setShowSearchBar] = useState(false);
   const [dirHistory, setDirHistory] = useState<string[]>([]);
@@ -48,6 +51,21 @@ export function SftpPanel(props: {
   const canGoBack = historyIndex >= 0;
   const canGoForward = historyIndex < dirHistory.length - 1;
   const [editingFile, setEditingFile] = useState<{ name: string; path: string } | null>(null);
+  const [overwriteDialog, setOverwriteDialog] = useState<{
+    open: boolean;
+    fileName: string;
+    renameName: string;
+    localPath: string;
+    resolve: ((result: [FileOverwriteAction, string]) => void) | null;
+  }>({ open: false, fileName: "", renameName: "", localPath: "", resolve: null });
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    entry: RemoteEntry | null;
+  }>({ open: false, entry: null });
+  const [renameDialog, setRenameDialog] = useState<{
+    open: boolean;
+    entry: RemoteEntry | null;
+  }>({ open: false, entry: null });
   const [menu, setMenu] = useState<{
     open: boolean;
     x: number;
@@ -120,94 +138,237 @@ export function SftpPanel(props: {
     };
   }, [menu.open]);
 
-  // 上传文件（支持恢复检查）
+  // 上传文件（支持文件名重复检测、恢复检查、异步不阻塞）
   const uploadWithResumeCheck = useCallback(
     async (paths: string[]) => {
       if (!props.ptyId) return;
       if (!paths.length) return;
-      setBusy(true);
-      setError(null);
-      try {
-        for (const p of paths) {
-          // 规范化 Windows 路径：转换为正斜杠
-          const normalizedPath = p.replace(/\\/g, "/");
-          const name = basename(normalizedPath);
-          const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
-          const remote = base ? `${base}/${name}` : name;
 
-          // Check for resume (仅在用户直接选择文件时进行)
-          const info = await api.sftpLocalFileInfo(p).catch(() => null);
-          const shouldResume = info?.exists && info!.size > 0;
-          let useResume = false;
+      // 准备上传队列
+      const queue: {
+        localPath: string;
+        name: string;
+        remote: string;
+        action: "upload" | "skip" | null;
+      }[] = [];
 
-          if (shouldResume) {
-            useResume = window.confirm(
-              tf(lang, "transferResumeMessage", { size: formatSize(info!.size) }),
-            );
+      // 检查每个文件
+      for (const p of paths) {
+        const normalizedPath = p.replace(/\\/g, "/");
+        const name = basename(normalizedPath);
+        const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
+        const remote = base ? `${base}/${name}` : name;
+
+        // 检查远程是否存在同名文件
+        const remoteExists = entries.some(
+          (e) => e.name === name && e.kind !== "dir"
+        );
+
+        if (remoteExists) {
+          // 远程存在同名文件，显示覆盖确认对话框（三个选项：覆盖、重命名、取消）
+          const [action, renameName] = await new Promise<[FileOverwriteAction, string]>((resolve) => {
+            // 生成默认的重命名文件名
+            const defaultRename = name.includes(".")
+              ? name.slice(0, name.lastIndexOf(".")) + "_copy" + name.slice(name.lastIndexOf("."))
+              : name + "_copy";
+            setOverwriteDialog({
+              open: true,
+              fileName: name,
+              renameName: defaultRename,
+              localPath: p,
+              resolve,
+            });
+          });
+
+          if (action === "overwrite") {
+            // 用户选择覆盖
+            queue.push({ localPath: p, name, remote, action: "upload" });
+          } else if (action === "rename" && renameName) {
+            // 用户选择重命名，使用用户输入的文件名
+            const newRemote = base ? `${base}/${renameName}` : renameName;
+            queue.push({ localPath: p, name: renameName, remote: newRemote, action: "upload" });
+          } else {
+            // 用户选择取消，跳过此文件
+            // 不添加到队列中
           }
+        } else {
+          // 远程不存在，直接上传
+          queue.push({ localPath: p, name, remote, action: "upload" });
+        }
+      }
 
-          // Show transfer progress
-          setTransfer({ fileName: name, status: "transferring", progress: 0 });
+      // 过滤掉被跳过的文件
+      const filesToUpload = queue.filter((f) => f.action === "upload");
+      if (filesToUpload.length === 0) return;
+
+      // 初始化传输队列状态
+      setTransferQueue(
+        filesToUpload.map((f) => ({
+          fileName: f.name,
+          status: "waiting" as const,
+          progress: 0,
+        }))
+      );
+
+      // 异步执行上传，不阻塞界面
+      (async () => {
+        for (let i = 0; i < filesToUpload.length; i++) {
+          const file = filesToUpload[i];
+
+          // 更新状态为传输中
+          setTransferQueue((prev) =>
+            prev.map((f, idx) =>
+              idx === i ? { ...f, status: "transferring" } : f
+            )
+          );
 
           try {
-            if (useResume) {
-              await api.sftpPutPartial(props.ptyId!, p, remote);
-            } else {
-              await api.sftpPut(props.ptyId!, p, remote);
-            }
-            setTransfer({ fileName: name, status: "complete", progress: 100 });
+            // TODO: 断点续传功能暂未完善，后续需要实现：
+            // 1. 检测本地和远程文件是否确实是同一个文件（通过文件大小+修改时间或内容hash）
+            // 2. 只有在确认是同一文件时才提示断点续传
+            // 3. 目前临时直接上传，不提示断点续传
+            await api.sftpPut(props.ptyId!, file.localPath, file.remote);
+
+            // 上传完成
+            setTransferQueue((prev) =>
+              prev.map((f, idx) =>
+                idx === i ? { ...f, status: "complete", progress: 100 } : f
+              )
+            );
           } catch (e) {
-            setTransfer({ fileName: name, status: "failed", progress: 0 });
-            throw new Error(`Upload failed: ${name} - ${e}`);
+            // 上传失败
+            setTransferQueue((prev) =>
+              prev.map((f, idx) =>
+                idx === i ? { ...f, status: "failed" } : f
+              )
+            );
+            setError(`Upload failed: ${file.name} - ${e}`);
           }
+
+          // 等待一小段时间让用户看到状态
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
+
+        // 所有文件处理完毕，清空队列并刷新
         await refresh();
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setBusy(false);
-        setTimeout(() => setTransfer(null), 3000);
-      }
+        setTimeout(() => setTransferQueue([]), 2000);
+      })();
     },
-    [props.ptyId, cwd, refresh, lang],
+    [props.ptyId, cwd, refresh, lang, entries],
   );
 
-  // 拖拽上传（跳过恢复检查，因为不是用户直接选择文件）
+  // 拖拽上传（支持文件名重复检测、异步不阻塞）
   const uploadDragDrop = useCallback(
     async (paths: string[]) => {
       if (!props.ptyId) return;
       if (!paths.length) return;
-      setBusy(true);
-      setError(null);
-      try {
-        for (const p of paths) {
-          // 规范化 Windows 路径：转换为正斜杠
-          const normalizedPath = p.replace(/\\/g, "/");
-          const name = basename(normalizedPath);
-          const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
-          const remote = base ? `${base}/${name}` : name;
 
-          // Show transfer progress
-          setTransfer({ fileName: name, status: "transferring", progress: 0 });
+      // 准备上传队列
+      const queue: {
+        localPath: string;
+        name: string;
+        remote: string;
+        action: "upload" | "skip" | null;
+      }[] = [];
+
+      // 检查每个文件
+      for (const p of paths) {
+        const normalizedPath = p.replace(/\\/g, "/");
+        const name = basename(normalizedPath);
+        const base = cwd.replace(/\\/g, "/").replace(/\/+$/g, "");
+        const remote = base ? `${base}/${name}` : name;
+
+        // 检查远程是否存在同名文件
+        const remoteExists = entries.some(
+          (e) => e.name === name && e.kind !== "dir"
+        );
+
+        if (remoteExists) {
+          // 远程存在同名文件，显示覆盖确认对话框（三个选项：覆盖、重命名、取消）
+          const [action, renameName] = await new Promise<[FileOverwriteAction, string]>((resolve) => {
+            // 生成默认的重命名文件名
+            const defaultRename = name.includes(".")
+              ? name.slice(0, name.lastIndexOf(".")) + "_copy" + name.slice(name.lastIndexOf("."))
+              : name + "_copy";
+            setOverwriteDialog({
+              open: true,
+              fileName: name,
+              renameName: defaultRename,
+              localPath: p,
+              resolve,
+            });
+          });
+
+          if (action === "overwrite") {
+            // 用户选择覆盖
+            queue.push({ localPath: p, name, remote, action: "upload" });
+          } else if (action === "rename" && renameName) {
+            // 用户选择重命名，使用用户输入的文件名
+            const newRemote = base ? `${base}/${renameName}` : renameName;
+            queue.push({ localPath: p, name: renameName, remote: newRemote, action: "upload" });
+          } else {
+            // 用户选择取消，跳过此文件
+          }
+        } else {
+          // 远程不存在，直接上传
+          queue.push({ localPath: p, name, remote, action: "upload" });
+        }
+      }
+
+      // 过滤掉被跳过的文件
+      const filesToUpload = queue.filter((f) => f.action === "upload");
+      if (filesToUpload.length === 0) return;
+
+      // 初始化传输队列状态
+      setTransferQueue(
+        filesToUpload.map((f) => ({
+          fileName: f.name,
+          status: "waiting" as const,
+          progress: 0,
+        }))
+      );
+
+      // 异步执行上传，不阻塞界面
+      (async () => {
+        for (let i = 0; i < filesToUpload.length; i++) {
+          const file = filesToUpload[i];
+
+          // 更新状态为传输中
+          setTransferQueue((prev) =>
+            prev.map((f, idx) =>
+              idx === i ? { ...f, status: "transferring" } : f
+            )
+          );
 
           try {
-            // 拖拽上传不使用恢复，直接上传
-            await api.sftpPut(props.ptyId!, p, remote);
-            setTransfer({ fileName: name, status: "complete", progress: 100 });
+            await api.sftpPut(props.ptyId!, file.localPath, file.remote);
+
+            // 上传完成
+            setTransferQueue((prev) =>
+              prev.map((f, idx) =>
+                idx === i ? { ...f, status: "complete", progress: 100 } : f
+              )
+            );
           } catch (e) {
-            setTransfer({ fileName: name, status: "failed", progress: 0 });
-            throw new Error(`Upload failed: ${name} - ${e}`);
+            // 上传失败
+            setTransferQueue((prev) =>
+              prev.map((f, idx) =>
+                idx === i ? { ...f, status: "failed" } : f
+              )
+            );
+            setError(`Upload failed: ${file.name} - ${e}`);
           }
+
+          // 等待一小段时间让用户看到状态
+          await new Promise((resolve) => setTimeout(resolve, 300));
         }
+
+        // 所有文件处理完毕，清空队列并刷新
         await refresh();
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setBusy(false);
-        setTimeout(() => setTransfer(null), 3000);
-      }
+        setTimeout(() => setTransferQueue([]), 2000);
+      })();
     },
-    [props.ptyId, cwd, refresh],
+    [props.ptyId, cwd, refresh, entries],
   );
 
   useEffect(() => {
@@ -339,8 +500,13 @@ export function SftpPanel(props: {
 
   async function remove(entry: RemoteEntry) {
     if (!props.ptyId) return;
-    const ok = window.confirm(tf(lang, "sftpConfirmDelete", { name: entry.name }));
-    if (!ok) return;
+    setConfirmDialog({ open: true, entry });
+  }
+
+  async function confirmRemove() {
+    const entry = confirmDialog.entry;
+    setConfirmDialog({ open: false, entry: null });
+    if (!entry || !props.ptyId) return;
     setBusy(true);
     setError(null);
     try {
@@ -355,12 +521,17 @@ export function SftpPanel(props: {
 
   async function rename(entry: RemoteEntry) {
     if (!props.ptyId) return;
-    const to = window.prompt(t(lang, "sftpPromptRenameTo"), entry.name);
-    if (!to || to === entry.name) return;
+    setRenameDialog({ open: true, entry });
+  }
+
+  async function confirmRename(newName: string) {
+    const entry = renameDialog.entry;
+    setRenameDialog({ open: false, entry: null });
+    if (!entry || !props.ptyId || !newName) return;
     setBusy(true);
     setError(null);
     try {
-      await api.sftpRename(props.ptyId, entry.name, to);
+      await api.sftpRename(props.ptyId, entry.name, newName);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -397,37 +568,51 @@ export function SftpPanel(props: {
     const normalizedDir = dir.replace(/\\/g, "/");
     const local = `${normalizedDir}/${basename(entry.name)}`;
 
-    // Check for resume
-    const info = await api.sftpLocalFileInfo(local).catch(() => null);
-    const shouldResume = info?.exists && info!.size > 0;
-    let useResume = false;
+    // 异步下载，不阻塞界面
+    (async () => {
+      setError(null);
 
-    if (shouldResume) {
-      useResume = window.confirm(
-        tf(lang, "transferResumeMessage", { size: formatSize(info!.size) }),
-      );
-    }
+      // 初始化传输状态
+      setTransferQueue([{
+        fileName: entry.name,
+        status: "transferring",
+        progress: 0,
+      }]);
 
-    setBusy(true);
-    setError(null);
+      try {
+        // Check for resume
+        const info = await api.sftpLocalFileInfo(local).catch(() => null);
+        const shouldResume = info?.exists && info!.size > 0;
+        let useResume = false;
 
-    // Show transfer progress
-    setTransfer({ fileName: entry.name, status: "transferring", progress: 0 });
+        if (shouldResume) {
+          useResume = await tauriConfirm(
+            tf(lang, "transferResumeMessage", { size: formatSize(info!.size) }),
+            { title: "断点续传", kind: "info" }
+          ).catch(() => false);
+        }
 
-    try {
-      if (useResume) {
-        await api.sftpGetPartial(props.ptyId!, entry.name, local);
-      } else {
-        await api.sftpGet(props.ptyId!, entry.name, local);
+        if (useResume) {
+          await api.sftpGetPartial(props.ptyId!, entry.name, local);
+        } else {
+          await api.sftpGet(props.ptyId!, entry.name, local);
+        }
+        setTransferQueue([{
+          fileName: entry.name,
+          status: "complete",
+          progress: 100,
+        }]);
+      } catch (e) {
+        setTransferQueue([{
+          fileName: entry.name,
+          status: "failed",
+          progress: 0,
+        }]);
+        setError(`Download failed: ${entry.name} - ${e}`);
       }
-      setTransfer({ fileName: entry.name, status: "complete", progress: 100 });
-    } catch (e) {
-      setTransfer({ fileName: entry.name, status: "failed", progress: 0 });
-      setError(String(e));
-    } finally {
-      setBusy(false);
-      setTimeout(() => setTransfer(null), 3000);
-    }
+
+      setTimeout(() => setTransferQueue([]), 3000);
+    })();
   }
 
   function closeMenu() {
@@ -776,14 +961,22 @@ export function SftpPanel(props: {
         </div>
       ) : null}
 
-      {/* Transfer Progress - 显示在底部 */}
-      {transfer ? (
-        <TransferProgress
-          fileName={transfer.fileName}
-          status={transfer.status}
-          progress={transfer.progress}
-          lang={lang}
-        />
+      {/* Transfer Progress - 显示传输队列（不阻塞界面） */}
+      {transferQueue.length > 0 ? (
+        <div className="border-t border-[var(--color-gray-800)] p-2 bg-[var(--color-gray-900)]">
+          <div className="text-xs text-[var(--color-gray-400)] mb-2">
+            {t(lang, "sftpTransferQueue")} ({transferQueue.filter(f => f.status === "complete").length}/{transferQueue.length})
+          </div>
+          {transferQueue.map((t, idx) => (
+            <TransferProgress
+              key={`${t.fileName}-${idx}`}
+              fileName={t.fileName}
+              status={t.status}
+              progress={t.progress}
+              lang={lang}
+            />
+          ))}
+        </div>
       ) : null}
 
       <FolderSyncDialog
@@ -804,6 +997,43 @@ export function SftpPanel(props: {
           lang={lang}
         />
       ) : null}
+
+      <FileOverwriteDialog
+        open={overwriteDialog.open}
+        fileName={overwriteDialog.fileName}
+        renameName={overwriteDialog.renameName}
+        onClose={() => {
+          if (overwriteDialog.resolve) {
+            overwriteDialog.resolve(["cancel", ""]);
+          }
+          setOverwriteDialog({ open: false, fileName: "", renameName: "", localPath: "", resolve: null });
+        }}
+        onAction={(action, renameName) => {
+          if (overwriteDialog.resolve) {
+            overwriteDialog.resolve([action, renameName ?? ""]);
+          }
+          setOverwriteDialog({ open: false, fileName: "", renameName: "", localPath: "", resolve: null });
+        }}
+        lang={lang}
+      />
+
+      {/* 删除确认对话框 */}
+      <SftpConfirmDialog
+        open={confirmDialog.open}
+        fileName={confirmDialog.entry?.name}
+        lang={lang}
+        onConfirm={confirmRemove}
+        onCancel={() => setConfirmDialog({ open: false, entry: null })}
+      />
+
+      {/* 重命名对话框 */}
+      <SftpRenameDialog
+        open={renameDialog.open}
+        originalName={renameDialog.entry?.name ?? ""}
+        lang={lang}
+        onConfirm={confirmRename}
+        onCancel={() => setRenameDialog({ open: false, entry: null })}
+      />
     </div>
   );
 }

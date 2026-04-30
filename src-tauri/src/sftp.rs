@@ -145,26 +145,89 @@ pub fn sftp_get_partial(session: &PtySession, remote: &str, local: &str) -> Resu
 }
 
 pub fn sftp_put(session: &PtySession, local: &str, remote: &str) -> Result<()> {
-    let out = sftp_exec(session, &format!("put \"{local}\" \"{remote}\""), Duration::from_secs(600))?;
+    // 首先验证本地文件是否存在
+    // 规范化路径：将反斜杠转换为正斜杠（SFTP 使用正斜杠）
+    let local_normalized = local.replace("\\", "/");
+    let remote_normalized = remote.replace("\\", "/");
     
-    // 调试输出
-    if debug_enabled() {
-        eprintln!("[zssh] sftp_put output: local={}, remote={}", local, remote);
-        eprintln!("[zssh] sftp_put output: {:?}", out);
+    let local_path = std::path::Path::new(&local_normalized);
+    if !local_path.exists() {
+        return Err(anyhow!("Local file does not exist: {}", local_normalized));
+    }
+    if !local_path.is_file() {
+        return Err(anyhow!("Local path is not a file: {}", local_normalized));
     }
     
-    // 忽略无害的提示信息
-    let harmless_patterns = ["uploading to", "转移到", "fetching", "100%", "kbps", "mbps", "stat remote"];
+    let cmd = format!("put \"{local_normalized}\" \"{remote_normalized}\"");
+    let out = sftp_exec(session, &cmd, Duration::from_secs(600))?;
     
-    // 更精确的错误检测：只在非无害行中查找错误
+    // 调试输出 - 详细打印每一行
+    eprintln!("[zssh] sftp_put: local={}, remote={}", local_normalized, remote_normalized);
+    eprintln!("[zssh] sftp_put output lines:");
+    for (i, line) in out.lines().enumerate() {
+        eprintln!("  [{}] {:?}", i, line);
+    }
+    
+    // 检查输出是否为空（这可能表示上传失败）
+    let out_clean = strip_ansi_and_osc(&out);
+    let out_lines: Vec<&str> = out_clean.lines().collect();
+    
+    // 检查是否有上传成功的标志（进度百分比）
+    let has_progress = out_lines.iter().any(|line| {
+        let lc = line.to_ascii_lowercase();
+        // 检查是否包含百分比进度（0%, 50%, 100% 等）
+        lc.contains("%") || 
+        // 或者包含 kbps/mbps 速度信息
+        lc.contains("kbps") || 
+        lc.contains("mbps")
+    });
+    
+    // 如果没有任何进度信息，上传可能失败了
+    if !has_progress && out_lines.len() <= 4 {
+        eprintln!("[zssh] sftp_put: No progress output detected, upload may have failed");
+        return Err(anyhow!("SFTP put command returned no progress - upload may have failed. Output: {}", out_clean.trim()));
+    }
+    
+    // 更严格的错误检测
     for line in out.lines() {
         let line_lower = line.to_ascii_lowercase();
+        let line_stripped = strip_ansi_and_osc(line_lower.trim());
         
         // 跳过空行和提示行
-        if line_lower.trim().is_empty() ||
-           line_lower.contains("sftp>") ||
-           line_lower.starts_with("put ") ||
-           harmless_patterns.iter().any(|h| line_lower.contains(h)) {
+        if line_stripped.is_empty() ||
+           line_stripped.contains("sftp>") {
+            continue;
+        }
+        
+        // 检查SFTP命令本身
+        if line_stripped.starts_with("put ") {
+            continue;
+        }
+        
+        // 跳过无害的提示信息
+        let harmless_patterns = [
+            "uploading to",
+            "转移到",
+            "转移到",
+            "fetching",
+            "kbps",
+            "mbps",
+            "bytes)",
+        ];
+        if harmless_patterns.iter().any(|h| line_stripped.contains(h)) {
+            continue;
+        }
+        
+        // 检查进度百分比 - 100% 是成功标志
+        if line_stripped.contains("100%") {
+            // 100% 后面如果跟着错误信息，说明上传失败
+            let after_percent = line_stripped.split("100%").nth(1).unwrap_or("");
+            if after_percent.contains("error") || 
+               after_percent.contains("fail") ||
+               after_percent.contains("couldn't") ||
+               after_percent.contains("permission") {
+                return Err(anyhow!("SFTP put failed after transfer: {}", line.trim()));
+            }
             continue;
         }
         
@@ -175,16 +238,25 @@ pub fn sftp_put(session: &PtySession, local: &str, remote: &str) -> Result<()> {
             "couldn't open",
             "not a regular file",
             "remote read",
+            "not found",
+            "operation failed",
+            "invalid path",
         ];
         
         for keyword in &error_keywords {
-            if line_lower.contains(keyword) {
+            if line_stripped.contains(keyword) {
                 return Err(anyhow!("SFTP put failed: {}", line.trim()));
             }
         }
         
-        // 对 "no such file" 特殊处理：只在确认是错误时才失败
-        if line_lower.contains("no such file") && !line_lower.contains("stat remote") {
+        // 对 "no such file" 特殊处理："stat remote: No such file" 是无害的（检查远程文件是否存在时正常返回）
+        // 只有在其他上下文中出现 "no such file" 才是真正的错误
+        if line_stripped.contains("no such file") && !line_stripped.contains("stat remote") {
+            return Err(anyhow!("SFTP put failed: {}", line.trim()));
+        }
+        
+        // 对 "couldn't stat" 特殊处理：同样，"stat remote" 相关的 shouldn't stat 是无害的
+        if line_stripped.contains("couldn't stat") && !line_stripped.contains("stat remote") {
             return Err(anyhow!("SFTP put failed: {}", line.trim()));
         }
     }
@@ -193,31 +265,90 @@ pub fn sftp_put(session: &PtySession, local: &str, remote: &str) -> Result<()> {
 }
 
 pub fn sftp_put_partial(session: &PtySession, local: &str, remote: &str) -> Result<u64> {
-    let offset = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
+    // 首先验证本地文件是否存在
+    // 规范化路径：将反斜杠转换为正斜杠（SFTP 使用正斜杠）
+    let local_normalized = local.replace("\\", "/");
+    let remote_normalized = remote.replace("\\", "/");
+    
+    let local_path = std::path::Path::new(&local_normalized);
+    if !local_path.exists() {
+        return Err(anyhow!("Local file does not exist: {}", local_normalized));
+    }
+    if !local_path.is_file() {
+        return Err(anyhow!("Local path is not a file: {}", local_normalized));
+    }
+    
+    let offset = std::fs::metadata(&local_normalized).map(|m| m.len()).unwrap_or(0);
     let cmd = if offset > 0 {
-        format!("put -a \"{local}\" \"{remote}\"")
+        format!("put -a \"{local_normalized}\" \"{remote_normalized}\"")
     } else {
-        format!("put \"{local}\" \"{remote}\"")
+        format!("put \"{local_normalized}\" \"{remote_normalized}\"")
     };
     let out = sftp_exec(session, &cmd, Duration::from_secs(600))?;
     
     // 调试输出
-    if debug_enabled() {
-        eprintln!("[zssh] sftp_put_partial output: {:?}", out);
+    eprintln!("[zssh] sftp_put_partial: local={}, remote={}, offset={}", local_normalized, remote_normalized, offset);
+    eprintln!("[zssh] sftp_put_partial output lines:");
+    for (i, line) in out.lines().enumerate() {
+        eprintln!("  [{}] {:?}", i, line);
     }
     
-    // 忽略无害的提示信息
-    let harmless_patterns = ["uploading to", "转移到", "fetching", "100%", "kbps", "mbps", "stat remote"];
+    // 检查输出是否为空
+    let out_clean = strip_ansi_and_osc(&out);
+    let out_lines: Vec<&str> = out_clean.lines().collect();
     
-    // 检查真正的错误
+    // 检查是否有上传成功的标志（进度百分比）
+    let has_progress = out_lines.iter().any(|line| {
+        let lc = line.to_ascii_lowercase();
+        lc.contains("%") || 
+        lc.contains("kbps") || 
+        lc.contains("mbps")
+    });
+    
+    // 如果没有任何进度信息，上传可能失败了
+    if !has_progress && out_lines.len() <= 4 {
+        eprintln!("[zssh] sftp_put_partial: No progress output detected, upload may have failed");
+        return Err(anyhow!("SFTP put partial command returned no progress - upload may have failed. Output: {}", out_clean.trim()));
+    }
+    
+    // 更严格的错误检测
     for line in out.lines() {
         let line_lower = line.to_ascii_lowercase();
+        let line_stripped = strip_ansi_and_osc(line_lower.trim());
         
         // 跳过空行和提示行
-        if line_lower.trim().is_empty() ||
-           line_lower.contains("sftp>") ||
-           line_lower.starts_with("put ") ||
-           harmless_patterns.iter().any(|h| line_lower.contains(h)) {
+        if line_stripped.is_empty() ||
+           line_stripped.contains("sftp>") {
+            continue;
+        }
+        
+        // 检查SFTP命令本身
+        if line_stripped.starts_with("put ") {
+            continue;
+        }
+        
+        // 跳过无害的提示信息
+        let harmless_patterns = [
+            "uploading to",
+            "转移到",
+            "fetching",
+            "kbps",
+            "mbps",
+            "bytes)",
+        ];
+        if harmless_patterns.iter().any(|h| line_stripped.contains(h)) {
+            continue;
+        }
+        
+        // 检查进度百分比
+        if line_stripped.contains("100%") {
+            let after_percent = line_stripped.split("100%").nth(1).unwrap_or("");
+            if after_percent.contains("error") || 
+               after_percent.contains("fail") ||
+               after_percent.contains("couldn't") ||
+               after_percent.contains("permission") {
+                return Err(anyhow!("SFTP put partial failed after transfer: {}", line.trim()));
+            }
             continue;
         }
         
@@ -228,16 +359,24 @@ pub fn sftp_put_partial(session: &PtySession, local: &str, remote: &str) -> Resu
             "couldn't open",
             "not a regular file",
             "remote read",
+            "not found",
+            "operation failed",
+            "invalid path",
         ];
         
         for keyword in &error_keywords {
-            if line_lower.contains(keyword) {
+            if line_stripped.contains(keyword) {
                 return Err(anyhow!("SFTP put partial failed: {}", line.trim()));
             }
         }
         
-        // 对 "no such file" 特殊处理
-        if line_lower.contains("no such file") && !line_lower.contains("stat remote") {
+        // 对 "no such file" 特殊处理："stat remote: No such file" 是无害的
+        if line_stripped.contains("no such file") && !line_stripped.contains("stat remote") {
+            return Err(anyhow!("SFTP put partial failed: {}", line.trim()));
+        }
+        
+        // 对 "couldn't stat" 特殊处理
+        if line_stripped.contains("couldn't stat") && !line_stripped.contains("stat remote") {
             return Err(anyhow!("SFTP put partial failed: {}", line.trim()));
         }
     }

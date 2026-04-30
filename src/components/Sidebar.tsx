@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, memo, type ReactNode } from "react";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import type { Group, SessionPublic, UUID } from "../types";
 import { ChevronDown, ChevronRight, MoreVertical, Notebook, PanelLeft, PanelLeftClose, Pencil, Plus, Search, Server, Settings, Star, Trash2, GripVertical } from "lucide-react";
@@ -54,7 +54,7 @@ function DropdownMenu(props: {
       </button>
       {open ? (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} onContextMenu={(e) => e.preventDefault()} />
           <div className="absolute right-0 top-full mt-1 bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] rounded shadow-lg z-20 min-w-[120px] overflow-hidden">
             {props.items.map((item) => (
               <button
@@ -128,7 +128,7 @@ function DroppableZone(props: { id: string; children: ReactNode }) {
 // 会话项内部组件
 // ========================
 
-const SessionItemWrapper = function SessionItemWrapper(
+const SessionItemWrapper = memo(function SessionItemWrapper(
   props: {
     session: SessionPublic;
     active: boolean;
@@ -201,7 +201,7 @@ const SessionItemWrapper = function SessionItemWrapper(
       </div>
     </div>
   );
-};
+});
 
 // ========================
 // 可拖动的会话项

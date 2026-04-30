@@ -8,6 +8,7 @@ import { TerminalView } from "./components/TerminalView";
 import { TerminalSearchBar } from "./components/TerminalSearchBar";
 import { CommandHistoryModal } from "./components/CommandHistoryModal";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
+import { TerminalToolbar } from "./components/TerminalToolbar";
 
 import { SftpPanel } from "./components/SftpPanel";
 import { MonitorPanel } from "./components/MonitorPanel";
@@ -22,12 +23,12 @@ import { useAppStore } from "./store/appStore";
 import { useNotepadStore } from "./store/notepadStore";
 import type { AuthPromptEvent, HostKeyPromptEvent, SessionPublic, UUID } from "./types";
 import { api } from "./api";
-import { Folder, PlugZap, Activity } from "lucide-react";
+
 import { useShortcuts } from "./hooks/useShortcuts";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { dbg } from "./lib/debug";
 import { DEFAULT_COMMON_COMMANDS } from "./lib/defaultCommonCommands";
-import { getCustomCommands, SYSTEM_COMMANDS, getSessionHistory } from "./lib/commandHistory";
+import { getCustomCommands, getSessionHistory } from "./lib/commandHistory";
 import { t, tf } from "./lib/i18n";
 import { DEFAULT_SHORTCUTS } from "./lib/defaultShortcuts";
 import { applyTheme, DEFAULT_THEME } from "./lib/themes";
@@ -173,6 +174,15 @@ function App() {
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
+  }, []);
+
+  // 全局禁用浏览器右键菜单
+  useEffect(() => {
+    const preventContextMenu = (e: Event) => {
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", preventContextMenu);
+    return () => document.removeEventListener("contextmenu", preventContextMenu);
   }, []);
 
   useEffect(() => {
@@ -496,176 +506,22 @@ function App() {
             activeTab.split ? (
               <PanelGroup direction={activeTab.splitDirection ?? "horizontal"} className="h-full">
                 <Panel defaultSize={75} minSize={30} className="flex flex-col">
-                  <div className={[
-                    "h-9 bg-[var(--color-gray-900)] border-b border-[var(--color-gray-800)] flex items-center gap-2 px-2 shrink-0"
-                  ].join(" ")}>
-                    <button
-                      disabled={!activeTab}
-                      onClick={async () => {
-                        if (!activeTab) return;
-                        dbg("info", "ui.connect:click", {
-                          tabId: activeTab.id,
-                          sessionId: activeTab.sessionId,
-                          cols: lastTermSize.cols,
-                          rows: lastTermSize.rows,
-                          isTauri,
-                        });
-                        if (!isTauri) {
-                          setConnectError(`${t(lang, "previewModeCannotConnect")}\n${t(lang, "useDesktopRun")}`);
-                          return;
-                        }
-                        try {
-                          if (activeTab.ptyId) {
-                            await store.disconnectTab(activeTab.id);
-                          } else {
-                            await store.connectTab(activeTab.id, lastTermSize.cols, lastTermSize.rows);
-                          }
-                        } catch (e: any) {
-                          dbg("error", "ui.connect:failed", { tabId: activeTab.id, message: String(e?.message ?? e ?? t(lang, "connectionFailed")) });
-                          setConnectError(String(e?.message ?? e ?? t(lang, "connectionFailed")));
-                        }
-                      }}
-                      className={[
-                        "px-2 py-1 rounded text-xs flex items-center gap-1.5",
-                        activeTab
-                          ? activeTab.ptyId
-                            ? "bg-[var(--color-gray-800)] text-[var(--color-gray-200)] hover:bg-[var(--color-gray-700)]"
-                            : "bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]"
-                          : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
-                      ].join(" ")}
-                    >
-                      <PlugZap className="size-3.5" />
-                      {activeTab?.ptyId ? t(lang, "disconnect") : t(lang, "connect")}
-                    </button>
-
-                    <button
-                      disabled={!activeTab}
-                      onClick={async () => {
-                        if (!activeTab) return;
-                        dbg("info", "ui.sftp:click", { tabId: activeTab.id, sessionId: activeTab.sessionId, sftpOpen: !!activeTab.sftpPtyId, isTauri });
-                        if (!isTauri) {
-                          setConnectError(`${t(lang, "previewModeCannotConnect")}\n${t(lang, "useDesktopRun")}`);
-                          return;
-                        }
-                        try {
-                          if (activeTab.sftpPtyId) {
-                            await store.closeSftp(activeTab.id);
-                          } else {
-                            await store.openSftp(activeTab.id, lastTermSize.cols, lastTermSize.rows);
-                          }
-                        } catch (e: any) {
-                          dbg("error", "ui.sftp:failed", { tabId: activeTab.id, message: String(e?.message ?? e ?? t(lang, "openSftpFailed")) });
-                          setConnectError(String(e?.message ?? e ?? t(lang, "openSftpFailed")));
-                        }
-                      }}
-                      className={[
-                        "px-2 py-1 rounded text-xs flex items-center gap-1.5",
-                        activeTab?.sftpPtyId ? "bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]" : activeTab ? "bg-[var(--color-gray-800)] text-[var(--color-gray-400)] hover:bg-[var(--color-gray-700)]" : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
-                      ].join(" ")}
-                    >
-                      <Folder className="size-3.5" />
-                      SFTP
-                    </button>
-
-                    {/* 系统命令下拉框 */}
-                    <select
-                      value=""
-                      disabled={!activeTab?.ptyId}
-                      onChange={(e) => {
-                        const v = e.currentTarget.value;
-                        e.currentTarget.value = "";
-                        if (!v) return;
-                        const ptyId = activeTab?.ptyId;
-                        if (!ptyId) return;
-                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
-                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
-                        setRefreshKey(n => n + 1);
-                      }}
-                      className={[
-                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
-                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
-                      ].join(" ")}
-                    >
-                      <option value="" disabled>
-                        系统命令
-                      </option>
-                      {SYSTEM_COMMANDS.map((c) => (
-                        <option key={c.id} value={c.command} title={c.command}>
-                          {t(lang, c.displayNameKey)}
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* 自定义命令下拉框 */}
-                    <select
-                      value=""
-                      disabled={!activeTab?.ptyId}
-                      onChange={(e) => {
-                        const v = e.currentTarget.value;
-                        e.currentTarget.value = "";
-                        if (!v) return;
-                        const ptyId = activeTab?.ptyId;
-                        if (!ptyId) return;
-                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
-                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
-                        setRefreshKey(n => n + 1);
-                      }}
-                      className={[
-                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
-                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
-                      ].join(" ")}
-                    >
-                      <option value="" disabled>
-                        自定义
-                      </option>
-                      {customCommands.map((c) => (
-                        <option key={c.id} value={c.command} title={c.command}>
-                          {c.displayName || c.command}
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* 历史记录下拉框 */}
-                    <select
-                      value=""
-                      disabled={!activeTab?.ptyId}
-                      onChange={(e) => {
-                        const v = e.currentTarget.value;
-                        e.currentTarget.value = "";
-                        if (!v) return;
-                        const ptyId = activeTab?.ptyId;
-                        if (!ptyId) return;
-                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
-                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
-                        setRefreshKey(n => n + 1);
-                      }}
-                      className={[
-                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
-                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
-                      ].join(" ")}
-                    >
-                      <option value="" disabled>
-                        历史记录
-                      </option>
-                      {recentHistory.map((c) => (
-                        <option key={c.id} value={c.command} title={c.command}>
-                          {c.command.slice(0, 30)}{c.command.length > 30 ? "..." : ""}
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="flex-1" />
-
-                    {activeSession ? (
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className={["size-2 rounded-full", activeTab?.ptyId ? "bg-emerald-500" : "bg-[var(--color-gray-700)]"].join(" ")} />
-                        <div className="text-xs text-[var(--color-gray-300)] truncate">{activeSession.name || activeTab?.title}</div>
-                        <div className="text-xs text-[var(--color-gray-600)] truncate">{activeSession.username}@{activeSession.host}:{activeSession.port}</div>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-[var(--color-gray-500)] truncate">{activeTab ? activeTab.title : t(lang, "noTabs")}</div>
-                    )}
-                  </div>
+                  <TerminalToolbar
+                    activeTab={activeTab}
+                    activeSession={activeSession}
+                    isTauri={isTauri}
+                    lang={lang}
+                    customCommands={customCommands}
+                    recentHistory={recentHistory}
+                    lastTermSize={lastTermSize}
+                    onConnectError={setConnectError}
+                    onRefresh={() => setRefreshKey(n => n + 1)}
+                    onConnectTab={(tabId, cols, rows) => store.connectTab(tabId, cols, rows)}
+                    onDisconnectTab={(tabId) => store.disconnectTab(tabId)}
+                    onOpenSftp={(tabId, cols, rows) => store.openSftp(tabId, cols, rows)}
+                    onCloseSftp={(tabId) => store.closeSftp(tabId)}
+                    onSendCommand={(ptyId, command) => api.ptySend(ptyId, command).catch(() => undefined)}
+                  />
                   <div className="flex-1 min-h-0 flex flex-col">
                     <TerminalSearchBar
                       searchAddon={searchAddonRef.current}
@@ -732,191 +588,22 @@ function App() {
               </PanelGroup>
             ) : (
               <div className="flex flex-col w-full h-full">
-                <div className={[
-                  "h-9 bg-[var(--color-gray-900)] border-b border-[var(--color-gray-800)] flex items-center gap-2 px-2"
-                ].join(" ")}>
-                  <button
-                    disabled={!activeTab}
-                    onClick={async () => {
-                      if (!activeTab) return;
-                      dbg("info", "ui.connect:click", {
-                        tabId: activeTab.id,
-                        sessionId: activeTab.sessionId,
-                        cols: lastTermSize.cols,
-                        rows: lastTermSize.rows,
-                        isTauri,
-                      });
-                      if (!isTauri) {
-                        setConnectError(`${t(lang, "previewModeCannotConnect")}\n${t(lang, "useDesktopRun")}`);
-                        return;
-                      }
-                      try {
-                        if (activeTab.ptyId) {
-                          await store.disconnectTab(activeTab.id);
-                        } else {
-                          await store.connectTab(activeTab.id, lastTermSize.cols, lastTermSize.rows);
-                        }
-                      } catch (e: any) {
-                        dbg("error", "ui.connect:failed", { tabId: activeTab.id, message: String(e?.message ?? e ?? t(lang, "connectionFailed")) });
-                        setConnectError(String(e?.message ?? e ?? t(lang, "connectionFailed")));
-                      }
-                    }}
-                    className={[
-                      "px-2 py-1 rounded text-xs flex items-center gap-1.5",
-                      activeTab
-                        ? activeTab.ptyId
-                          ? "bg-[var(--color-gray-800)] text-[var(--color-gray-200)] hover:bg-[var(--color-gray-700)]"
-                          : "bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]"
-                        : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
-                    ].join(" ")}
-                  >
-                    <PlugZap className="size-3.5" />
-                    {activeTab?.ptyId ? t(lang, "disconnect") : t(lang, "connect")}
-                  </button>
-
-                  <button
-                    disabled={!activeTab}
-                    onClick={async () => {
-                      if (!activeTab) return;
-                      dbg("info", "ui.sftp:click", { tabId: activeTab.id, sessionId: activeTab.sessionId, sftpOpen: !!activeTab.sftpPtyId, isTauri });
-                      if (!isTauri) {
-                        setConnectError(`${t(lang, "previewModeCannotConnect")}\n${t(lang, "useDesktopRun")}`);
-                        return;
-                      }
-                      try {
-                        if (activeTab.sftpPtyId) {
-                          // 已打开，点击关闭
-                          await store.closeSftp(activeTab.id);
-                        } else {
-                          // 未打开，点击打开
-                          await store.openSftp(activeTab.id, lastTermSize.cols, lastTermSize.rows);
-                        }
-                      } catch (e: any) {
-                        dbg("error", "ui.sftp:failed", { tabId: activeTab.id, message: String(e?.message ?? e ?? t(lang, "openSftpFailed")) });
-                        setConnectError(String(e?.message ?? e ?? t(lang, "openSftpFailed")));
-                      }
-                    }}
-                    className={[
-                      "px-2 py-1 rounded text-xs flex items-center gap-1.5",
-                      activeTab?.sftpPtyId ? "bg-[var(--color-blue-600)] text-white hover:bg-[var(--color-blue-700)]" : activeTab ? "bg-[var(--color-gray-800)] text-[var(--color-gray-400)] hover:bg-[var(--color-gray-700)]" : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
-                    ].join(" ")}
-                  >
-                    <Folder className="size-3.5" />
-                    SFTP
-                  </button>
-
-                  {/* Temporarily hidden - requires SSH key auth */}
-                  <button
-                    disabled={true}
-                    style={{ display: 'none' }}
-                    className={[
-                      "px-2 py-1 rounded text-xs flex items-center gap-1.5",
-                      activeTab?.ptyId ? "bg-[var(--color-gray-800)] text-[var(--color-gray-400)] hover:bg-[var(--color-gray-700)]" : "bg-[var(--color-gray-800)] text-[var(--color-gray-500)]",
-                    ].join(" ")}
-                  >
-                    <Activity className="size-3.5" />
-                    {t(lang, "monitor")}
-                  </button>
-
-                  {/* 系统命令下拉框 */}
-                  <select
-                    value=""
-                    disabled={!activeTab?.ptyId}
-                    onChange={(e) => {
-                      const v = e.currentTarget.value;
-                      e.currentTarget.value = "";
-                      if (!v) return;
-                      const ptyId = activeTab?.ptyId;
-                      if (!ptyId) return;
-                      dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
-                      api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
-                      setRefreshKey(n => n + 1);
-                    }}
-                    className={[
-                      "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
-                      !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
-                    ].join(" ")}
-                  >
-                    <option value="" disabled>
-                      系统命令
-                    </option>
-                    {SYSTEM_COMMANDS.map((c) => (
-                      <option key={c.id} value={c.command} title={c.command}>
-                        {t(lang, c.displayNameKey)}
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* 自定义命令下拉框 */}
-                  <select
-                    value=""
-                    disabled={!activeTab?.ptyId}
-                      onChange={(e) => {
-                        const v = e.currentTarget.value;
-                        e.currentTarget.value = "";
-                        if (!v) return;
-                        const ptyId = activeTab?.ptyId;
-                        if (!ptyId) return;
-                        dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
-                        api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
-                        setRefreshKey(n => n + 1);
-                      }}
-                      className={[
-                        "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
-                        !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
-                      ].join(" ")}
-                    >
-                      <option value="" disabled>
-                        自定义
-                      </option>
-                    {customCommands.map((c) => (
-                      <option key={c.id} value={c.command} title={c.command}>
-                        {c.displayName || c.command}
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* 历史记录下拉框 */}
-                  <select
-                    value=""
-                    disabled={!activeTab?.ptyId}
-                    onChange={(e) => {
-                      const v = e.currentTarget.value;
-                      e.currentTarget.value = "";
-                      if (!v) return;
-                      const ptyId = activeTab?.ptyId;
-                      if (!ptyId) return;
-                      dbg("info", "ui.quick_cmd:run", { tabId: activeTab.id, cmd: v });
-                      api.ptySend(ptyId, `${v}\n`).catch(() => undefined);
-                      setRefreshKey(n => n + 1);
-                    }}
-                    className={[
-                      "h-7 px-2 rounded text-xs bg-[var(--color-gray-800)] border border-[var(--color-gray-700)] text-[var(--color-gray-300)] w-[88px]",
-                      !activeTab?.ptyId ? "opacity-50" : "hover:border-[var(--color-gray-600)]",
-                    ].join(" ")}
-                  >
-                    <option value="" disabled>
-                      历史记录
-                    </option>
-                    {recentHistory.map((c) => (
-                      <option key={c.id} value={c.command} title={c.command}>
-                        {c.command.slice(0, 30)}{c.command.length > 30 ? "..." : ""}
-                      </option>
-                    ))}
-                  </select>
-
-                  <div className="flex-1" />
-
-                  {activeSession ? (
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className={["size-2 rounded-full", activeTab?.ptyId ? "bg-emerald-500" : "bg-[var(--color-gray-700)]"].join(" ")} />
-                      <div className="text-xs text-[var(--color-gray-300)] truncate">{activeSession.name || activeTab?.title}</div>
-                      <div className="text-xs text-[var(--color-gray-600)] truncate">{activeSession.username}@{activeSession.host}:{activeSession.port}</div>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-[var(--color-gray-500)] truncate">{activeTab ? activeTab.title : t(lang, "noTabs")}</div>
-                  )}
-                </div>
+                <TerminalToolbar
+                  activeTab={activeTab}
+                  activeSession={activeSession}
+                  isTauri={isTauri}
+                  lang={lang}
+                  customCommands={customCommands}
+                  recentHistory={recentHistory}
+                  lastTermSize={lastTermSize}
+                  onConnectError={setConnectError}
+                  onRefresh={() => setRefreshKey(n => n + 1)}
+                  onConnectTab={(tabId, cols, rows) => store.connectTab(tabId, cols, rows)}
+                  onDisconnectTab={(tabId) => store.disconnectTab(tabId)}
+                  onOpenSftp={(tabId, cols, rows) => store.openSftp(tabId, cols, rows)}
+                  onCloseSftp={(tabId) => store.closeSftp(tabId)}
+                  onSendCommand={(ptyId, command) => api.ptySend(ptyId, command).catch(() => undefined)}
+                />
                 <div className="flex-1 min-h-0 flex flex-col">
                   <TerminalSearchBar
                     searchAddon={searchAddonRef.current}

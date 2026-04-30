@@ -328,7 +328,7 @@ export function MonitorPanel({ sessionId, open, onClose, lang }: MonitorPanelPro
   }
 
   return (
-    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/60">
+    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/60" onContextMenu={(e) => e.preventDefault()}>
       <div className="w-[720px] max-h-[85vh] flex flex-col rounded-lg bg-[var(--color-gray-900)] border border-[var(--color-gray-700)] shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-gray-800)] rounded-t-lg">

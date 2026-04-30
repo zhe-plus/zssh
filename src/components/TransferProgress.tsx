@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { t } from "../lib/i18n";
 import { X, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 
-export type TransferStatus = "idle" | "transferring" | "complete" | "failed";
+export type TransferStatus = "idle" | "waiting" | "transferring" | "complete" | "failed";
 
 interface TransferProgressProps {
   fileName: string;
@@ -27,6 +27,7 @@ export function TransferProgress({ fileName, status, progress = 0, speed, lang }
 
   const statusIcon = {
     idle: null,
+    waiting: <Loader2 className="size-3.5 animate-spin text-yellow-400" />,
     transferring: <Loader2 className="size-3.5 animate-spin text-blue-400" />,
     complete: <CheckCircle className="size-3.5 text-green-400" />,
     failed: <AlertCircle className="size-3.5 text-red-400" />,
@@ -34,6 +35,7 @@ export function TransferProgress({ fileName, status, progress = 0, speed, lang }
 
   const statusText = {
     idle: "",
+    waiting: t(lang_, "transferWaiting") || "等待中...",
     transferring: t(lang_, "transferring"),
     complete: t(lang_, "transferComplete"),
     failed: t(lang_, "transferFailed"),

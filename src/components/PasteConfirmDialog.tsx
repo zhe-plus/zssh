@@ -18,6 +18,7 @@ export function PasteConfirmDialog({ result, lang, onExecute, onCancel }: PasteC
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       onClick={(e) => e.target === e.currentTarget && onCancel()}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <div className="w-[520px] bg-[var(--color-gray-900)] border border-[var(--color-gray-700)] rounded-lg shadow-xl flex flex-col overflow-hidden">
         {/* Header */}

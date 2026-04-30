@@ -251,6 +251,7 @@ export function CommandManager({ open, lang, onSelect, onClose }: CommandManager
     <div
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-6"
       onClick={(e) => e.target === e.currentTarget && onClose()}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <div 
         className="w-[700px] max-w-full h-[70vh] bg-[var(--color-gray-900)] border border-[var(--color-gray-800)] rounded-lg shadow-xl flex flex-col overflow-hidden"

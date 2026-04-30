@@ -22,7 +22,7 @@ use anyhow::{anyhow, Result};
 use portable_pty::CommandBuilder;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::menu::{MenuBuilder, SubmenuBuilder};
+use tauri::menu::MenuBuilder;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
@@ -985,28 +985,59 @@ fn sftp_rename_cmd(state: State<'_, AppState>, pty_id: Uuid, from: String, to: S
 }
 
 #[tauri::command]
-fn sftp_get_cmd(state: State<'_, AppState>, pty_id: Uuid, remote: String, local: String) -> Result<(), String> {
+async fn sftp_get_cmd(state: State<'_, AppState>, pty_id: Uuid, remote: String, local: String) -> Result<(), String> {
+    // 先获取 PTY（它是 Clone 的），避免在 spawn_blocking 中引用 state
     let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?;
-    sftp_get(&pty, &remote, &local).map_err(|e| e.to_string())
+    let remote = remote.clone();
+    let local = local.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        sftp_get(&pty, &remote, &local).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn sftp_get_partial_cmd(state: State<'_, AppState>, pty_id: Uuid, remote: String, local: String) -> Result<u64, String> {
+async fn sftp_get_partial_cmd(state: State<'_, AppState>, pty_id: Uuid, remote: String, local: String) -> Result<u64, String> {
+    // 先获取 PTY（它是 Clone 的），避免在 spawn_blocking 中引用 state
     let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?;
-    sftp_get_partial(&pty, &remote, &local).map_err(|e| e.to_string())
+    let remote = remote.clone();
+    let local = local.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        sftp_get_partial(&pty, &remote, &local).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn sftp_put_cmd(state: State<'_, AppState>, pty_id: Uuid, local: String, remote: String) -> Result<(), String> {
+async fn sftp_put_cmd(state: State<'_, AppState>, pty_id: Uuid, local: String, remote: String) -> Result<(), String> {
+    // 先获取 PTY（它是 Clone 的），避免在 spawn_blocking 中引用 state
     let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?;
-    sftp_put(&pty, &local, &remote).map_err(|e| e.to_string())
+    let local = local.clone();
+    let remote = remote.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        sftp_put(&pty, &local, &remote).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn sftp_put_partial_cmd(state: State<'_, AppState>, pty_id: Uuid, local: String, remote: String) -> Result<u64, String> {
-    let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?
-;
-    sftp_put_partial(&pty, &local, &remote).map_err(|e| e.to_string())
+async fn sftp_put_partial_cmd(state: State<'_, AppState>, pty_id: Uuid, local: String, remote: String) -> Result<u64, String> {
+    // 先获取 PTY（它是 Clone 的），避免在 spawn_blocking 中引用 state
+    let pty = require_sftp(&state, pty_id).map_err(|e| e.to_string())?;
+    let local = local.clone();
+    let remote = remote.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        sftp_put_partial(&pty, &local, &remote).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

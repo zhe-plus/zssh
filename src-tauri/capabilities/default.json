@@ -12,6 +12,7 @@
     "core:window:allow-is-maximized",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-confirm",
     "opener:default"
   ]
 }

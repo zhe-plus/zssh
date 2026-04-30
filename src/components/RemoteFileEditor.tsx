@@ -96,7 +96,7 @@ export function RemoteFileEditor({
   const lines = content.split("\n");
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onContextMenu={(e) => e.preventDefault()}>
       <div className="w-[85vw] max-w-[900px] h-[80vh] flex flex-col rounded-lg bg-[var(--color-gray-900)] border border-[var(--color-gray-700)] shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-gray-800)] bg-[var(--color-gray-950)] rounded-t-lg">

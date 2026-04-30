@@ -75,6 +75,7 @@ export function CommandHistoryModal({ open, lang, onSelect, onClose }: CommandHi
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
       onClick={(e) => e.target === e.currentTarget && onClose()}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <div className="w-[520px] max-h-[60vh] bg-[var(--color-gray-900)] border border-[var(--color-gray-700)] rounded-lg shadow-xl flex flex-col overflow-hidden">
         {/* Header */}

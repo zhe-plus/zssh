@@ -4,7 +4,7 @@ import { SortableContext, useSortable, horizontalListSortingStrategy, arrayMove 
 import type { Tab } from "../store/appStore";
 import { useEffect, useState, type CSSProperties } from "react";
 import type { UUID } from "../types";
-import { Plus, X, Copy, PlugZap } from "lucide-react";
+import { X, Copy, PlugZap } from "lucide-react";
 import { isCompactLayout } from "../lib/layout";
 import { WindowControls } from "./WindowControls";
 
@@ -38,9 +38,11 @@ function TabItem(props: {
       onClick={props.onClick}
       onContextMenu={(ev) => {
         ev.preventDefault();
+        ev.stopPropagation();
         props.onContextMenu(ev, props.tab.id);
       }}
       onMouseDown={(e) => {
+        // 阻止 dnd-kit 捕获右键事件
         if (e.button === 2) {
           e.stopPropagation();
         }
@@ -99,6 +101,19 @@ export function TabBar(props: {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menu.open]);
 
+  // 全局阻止右键菜单，确保自定义右键菜单正常工作
+  useEffect(() => {
+    const preventContextMenu = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      // 只在标签栏区域内阻止默认右键菜单
+      if (target?.closest("[data-tab-bar]")) {
+        e.preventDefault();
+      }
+    };
+    document.addEventListener("contextmenu", preventContextMenu);
+    return () => document.removeEventListener("contextmenu", preventContextMenu);
+  }, []);
+
   function openMenu(ev: React.MouseEvent, tabId: UUID) {
     ev.preventDefault();
     ev.stopPropagation();
@@ -112,6 +127,7 @@ export function TabBar(props: {
 
   return (
     <div
+      data-tab-bar
       className={[
         "bg-[var(--color-gray-900)] border-b border-[var(--color-gray-800)] flex items-center overflow-hidden",
         isCompact ? "h-10" : "h-12",
@@ -163,7 +179,7 @@ export function TabBar(props: {
 
       {menu.open && menu.tabId ? (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setMenu({ open: false, x: 0, y: 0, tabId: null })} />
+          <div className="fixed inset-0 z-40" onClick={() => setMenu({ open: false, x: 0, y: 0, tabId: null })} onContextMenu={(e) => e.preventDefault()} />
           <div
             className="fixed z-50 w-[170px] rounded border border-[var(--color-gray-700)] bg-[var(--color-gray-800)] shadow-lg overflow-hidden"
             style={{ left: menu.x, top: menu.y }}

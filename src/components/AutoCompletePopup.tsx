@@ -56,6 +56,7 @@ export function AutoCompletePopup({
       <div
         className="fixed inset-0 z-[99]"
         onMouseDown={onClose}
+        onContextMenu={(e) => e.preventDefault()}
       />
 
       {/* Popup */}
